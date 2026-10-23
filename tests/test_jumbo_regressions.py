@@ -1,5 +1,7 @@
 """Regressions found while exploring the Jumbo app (dumps taken from a Pixel 7a, Android 17)."""
 
+import random
+
 from adtlib import guard, hierarchy
 
 DISPLAY = (1080, 2400)
@@ -50,6 +52,18 @@ def test_tap_point_avoids_bottom_navigation(fixture_xml):
     assert card.bounds.contains(x, y) and y < nav_top
     assert hierarchy.element_at(snap, x, y) is card
     assert nav  # sanity: tab bar is in the dump
+
+
+def test_keyboard_area_counts_as_covering(fixture_xml):
+    # Keyboard window as Gboard reports it on this phone: [0,1517][1080,2400].
+    snap = _snap(fixture_xml, "jumbo_search_results.xml")
+    keyboard = hierarchy.Bounds(0, 1517, 1080, 2400)
+    under = [e for e in snap.elements if e.clickable and e.bounds.top >= keyboard.top]
+    assert under, "fixture premise: some controls sit where the keyboard would be"
+    assert all(hierarchy.visible_point(snap, e, (keyboard,)) is None for e in under)
+    above = next(e for e in snap.elements if e.editable)
+    x, y = hierarchy.human_point(snap, above, random.Random(1), (keyboard,))
+    assert not keyboard.contains(x, y)
 
 
 def test_fully_covered_element_has_no_tap_point(fixture_xml):

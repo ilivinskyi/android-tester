@@ -8,8 +8,18 @@ from pathlib import Path
 
 
 def home() -> Path:
-    """State lives in the project the agent is testing from, so evidence stays next to reports."""
-    return Path(os.environ.get("ADT_HOME", ".adt")).resolve()
+    """State lives in the project the agent is testing from, so evidence stays next to reports.
+
+    Like git, look upwards for the project: the nearest folder holding `.adt/` or `.android-tester/`.
+    That way commands run from inside a run folder still find the active session.
+    """
+    if explicit := os.environ.get("ADT_HOME"):
+        return Path(explicit).resolve()
+    cwd = Path.cwd().resolve()
+    for folder in (cwd, *cwd.parents):
+        if (folder / ".adt").is_dir() or (folder / ".android-tester").is_dir():
+            return folder / ".adt"
+    return cwd / ".adt"
 
 
 def device_dir(serial: str) -> Path:

@@ -24,8 +24,11 @@ def run_dir(serial: str) -> Path | None:
     return Path(data["run_dir"]) if data else None
 
 
-def start(serial: str, directory: Path, meta: dict) -> Path:
-    """Create the run folder and mark it active for this device. Existing files are kept."""
+def start(serial: str, directory: Path, meta: dict, defaults: dict | None = None) -> Path:
+    """Create the run folder and mark it active for this device. Existing files are kept.
+
+    `meta` overwrites what session.json has; `defaults` only fills fields that are still missing.
+    """
     directory = directory.resolve()
     for sub in RUN_SUBDIRS:
         (directory / sub).mkdir(parents=True, exist_ok=True)
@@ -33,6 +36,9 @@ def start(serial: str, directory: Path, meta: dict) -> Path:
     session_file = directory / "session.json"
     session = state.read_json(session_file) or {}
     session.update({k: v for k, v in meta.items() if v is not None})
+    for key, value in (defaults or {}).items():
+        if value is not None:
+            session.setdefault(key, value)
     session.setdefault("started", now)
     state.write_json(session_file, session)
     findings = directory / "findings.json"
@@ -52,7 +58,22 @@ def end(serial: str) -> Path | None:
     session["ended"] = datetime.now().astimezone().isoformat(timespec="seconds")
     state.write_json(session_file, session)
     _active_file(serial).unlink(missing_ok=True)
+    # Clips are usually cut after the session ended; remember where it was.
+    state.write_json(state.device_dir(serial) / "last_session.json", {"run_dir": str(directory)})
     return directory
+
+
+def package(serial: str) -> str | None:
+    """The app under test in the active session (session.json `package`)."""
+    directory = run_dir(serial)
+    data = state.read_json(directory / "session.json") if directory else None
+    return (data or {}).get("package") or None
+
+
+def latest_run_dir(serial: str) -> Path | None:
+    """The active session's folder, or the last ended one."""
+    data = active(serial) or state.read_json(state.device_dir(serial) / "last_session.json")
+    return Path(data["run_dir"]) if data else None
 
 
 def log_action(serial: str, entry: dict, started: datetime | None = None) -> None:
@@ -66,3 +87,17 @@ def log_action(serial: str, entry: dict, started: datetime | None = None) -> Non
         record["duration_s"] = round((now - started).total_seconds(), 2)
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def note_fast_step(serial: str, step: str) -> Path | None:
+    """Add a setup step to the active session's setup_steps_fast (once), so the report lists it."""
+    directory = run_dir(serial)
+    if directory is None:
+        return None
+    path = directory / "session.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    steps = data.setdefault("setup_steps_fast", [])
+    if step not in steps:
+        steps.append(step)
+        state.write_json(path, data)
+    return path

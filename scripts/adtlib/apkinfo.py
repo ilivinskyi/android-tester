@@ -69,16 +69,19 @@ def _string_pool(data: bytes, offset: int) -> list[str]:
     return strings
 
 
-def parse_manifest(axml: bytes) -> tuple[dict, list[str]]:
-    """(manifest attributes, permissions) from a binary AndroidManifest.xml.
+_TYPE_REFERENCE, _TYPE_STRING, _TYPE_INT_DEC, _TYPE_INT_HEX = 0x01, 0x03, 0x10, 0x11
 
-    Permissions include <uses-permission> names and the `permission` guarding any component
-    (that's how accessibility services and device admins show up).
-    """
+
+@dataclass(frozen=True)
+class ResourceRef:
+    """An attribute value that points into resources.arsc (e.g. android:label="@string/app_name")."""
+    res_id: int
+
+
+def _elements(axml: bytes):
+    """Yield (tag, {attribute: str | int | ResourceRef}) for every start tag of a binary XML file."""
     pos = struct.unpack_from("<H", axml, 2)[0]  # skip the XML chunk header
     strings: list[str] = []
-    manifest: dict = {}
-    permissions: list[str] = []
     while pos < len(axml):
         chunk_type, header_size, size = struct.unpack_from("<HHI", axml, pos)
         if chunk_type == 0x0001:
@@ -86,20 +89,130 @@ def parse_manifest(axml: bytes) -> tuple[dict, list[str]]:
         elif chunk_type == 0x0102:
             name = strings[struct.unpack_from("<I", axml, pos + 20)[0]]
             attr_start, attr_size, attr_count = struct.unpack_from("<HHH", axml, pos + 24)
-            attrs = {}
+            attrs: dict = {}
             for i in range(attr_count):
                 a = pos + 16 + attr_start + i * attr_size
                 _, a_name, raw, _, _, data_type, value = struct.unpack_from("<IIIHBBI", axml, a)
                 key = strings[a_name] if a_name < len(strings) else ""
-                attrs[key] = strings[raw] if raw != 0xFFFFFFFF else (value if data_type in (0x10, 0x11) else raw)
-            if name == "manifest" and not manifest:
-                manifest = attrs
-            elif name in ("uses-permission", "uses-permission-sdk-23") and isinstance(attrs.get("name"), str):
-                permissions.append(attrs["name"])
-            elif isinstance(attrs.get("permission"), str):
-                permissions.append(attrs["permission"])
+                if raw != 0xFFFFFFFF:
+                    attrs[key] = strings[raw]
+                elif data_type in (_TYPE_INT_DEC, _TYPE_INT_HEX):
+                    attrs[key] = value
+                elif data_type == _TYPE_REFERENCE:
+                    attrs[key] = ResourceRef(value)
+                else:
+                    attrs[key] = raw
+            yield name, attrs
         pos += size if size else header_size
+
+
+def parse_manifest(axml: bytes) -> tuple[dict, list[str]]:
+    """(manifest attributes, permissions) from a binary AndroidManifest.xml.
+
+    Permissions include <uses-permission> names and the `permission` guarding any component
+    (that's how accessibility services and device admins show up).
+    """
+    manifest: dict = {}
+    permissions: list[str] = []
+    for name, attrs in _elements(axml):
+        if name == "manifest" and not manifest:
+            manifest = attrs
+        elif name in ("uses-permission", "uses-permission-sdk-23") and isinstance(attrs.get("name"), str):
+            permissions.append(attrs["name"])
+        elif isinstance(attrs.get("permission"), str):
+            permissions.append(attrs["permission"])
     return manifest, sorted(set(permissions))
+
+
+def application_label(axml: bytes) -> str | ResourceRef | None:
+    """The <application android:label>: a literal string, or a reference to resolve with resource_string."""
+    for name, attrs in _elements(axml):
+        if name == "application":
+            label = attrs.get("label")
+            return label if isinstance(label, (str, ResourceRef)) else None
+    return None
+
+
+# --- resources.arsc --------------------------------------------------------------------------
+
+_RES_TABLE_PACKAGE, _RES_TABLE_TYPE = 0x0200, 0x0201
+_NO_ENTRY32, _NO_ENTRY16 = 0xFFFFFFFF, 0xFFFF
+_FLAG_SPARSE, _FLAG_OFFSET16 = 0x01, 0x02
+_ENTRY_COMPLEX, _ENTRY_COMPACT = 0x0001, 0x0008
+
+
+def _entry_offset(arsc: bytes, chunk: int, header_size: int, flags: int, count: int, index: int) -> int | None:
+    table = chunk + header_size
+    if flags & _FLAG_SPARSE:
+        for i in range(count):
+            idx, off = struct.unpack_from("<HH", arsc, table + i * 4)
+            if idx == index:
+                return off * 4
+        return None
+    if index >= count:
+        return None
+    if flags & _FLAG_OFFSET16:
+        off = struct.unpack_from("<H", arsc, table + index * 2)[0]
+        return None if off == _NO_ENTRY16 else off * 4
+    off = struct.unpack_from("<I", arsc, table + index * 4)[0]
+    return None if off == _NO_ENTRY32 else off
+
+
+def _entry_value(arsc: bytes, entry: int) -> tuple[int, int] | None:
+    """(data type, data) of a simple resource entry; None for maps (styles, plurals)."""
+    size, flags = struct.unpack_from("<HH", arsc, entry)
+    if flags & _ENTRY_COMPACT:
+        # Android 14+ compact entry: the flags' high byte is the type and the data follows the key.
+        return flags >> 8, struct.unpack_from("<I", arsc, entry + 4)[0]
+    if flags & _ENTRY_COMPLEX:
+        return None
+    _, _, data_type, data = struct.unpack_from("<HBBI", arsc, entry + size)
+    return data_type, data
+
+
+_PSEUDO_REGIONS = ("XA", "XB")  # Android's test locales: "[Çåméŕå]" and right-to-left mirrors
+
+
+def resource_string(arsc: bytes, res_id: int, locale: str = "", _depth: int = 0) -> str | None:
+    """Resolve a string resource like 0x7f11001c from a resources.arsc file.
+
+    `locale` like "en-NL" or "en". Prefers that exact locale, then its language, then the default
+    configuration, then any real locale. Pseudo-locales (en-XA, ar-XB) are never picked.
+    """
+    package_id, type_id, entry_index = res_id >> 24, (res_id >> 16) & 0xFF, res_id & 0xFFFF
+    global_strings = _string_pool(arsc, struct.unpack_from("<H", arsc, 2)[0])
+    pos = struct.unpack_from("<H", arsc, 2)[0]
+    candidates: dict[str, tuple[int, int]] = {}
+    while pos < len(arsc):
+        chunk_type, header_size, size = struct.unpack_from("<HHI", arsc, pos)
+        if chunk_type == _RES_TABLE_PACKAGE and struct.unpack_from("<I", arsc, pos + 8)[0] == package_id:
+            inner, end = pos + header_size, pos + size
+            while inner < end:
+                c_type, c_header, c_size = struct.unpack_from("<HHI", arsc, inner)
+                if c_type == _RES_TABLE_TYPE and arsc[inner + 8] == type_id:
+                    flags = arsc[inner + 9]
+                    count, entries_start = struct.unpack_from("<II", arsc, inner + 12)
+                    # ResTable_config: size, mcc, mnc, then language[2] and country[2].
+                    lang = arsc[inner + 28:inner + 30].decode("ascii", "ignore").strip("\x00")
+                    region = arsc[inner + 30:inner + 32].decode("ascii", "ignore").strip("\x00")
+                    offset = _entry_offset(arsc, inner, c_header, flags, count, entry_index)
+                    if offset is not None and region not in _PSEUDO_REGIONS:
+                        value = _entry_value(arsc, inner + entries_start + offset)
+                        key = f"{lang}-{region}" if lang and region else lang
+                        if value and key not in candidates:
+                            candidates[key] = value
+                inner += c_size or c_header
+        pos += size or header_size
+    language = locale.split("-")[0]
+    for key in (locale, language, "", *candidates):
+        if key in candidates:
+            data_type, data = candidates[key]
+            if data_type == _TYPE_STRING and data < len(global_strings):
+                return global_strings[data]
+            if data_type == _TYPE_REFERENCE and _depth < 3:
+                return resource_string(arsc, data, locale, _depth + 1)
+            return None
+    return None
 
 
 # --- signatures ------------------------------------------------------------------------------

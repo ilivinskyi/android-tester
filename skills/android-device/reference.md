@@ -44,6 +44,9 @@ State files per device under `ADT_HOME` (default `./.adt/<serial>/`): `latest.js
 
 Every action: think pause (0.4-1.4 s), the action, then wait until the screen is stable and compare it with the screen before.
 "no visible change" in the output means the action may not have landed.
+After every action the crash buffer is checked; "CRASH right after this action" names the crashing process and exception.
+During a session with `--logcat`, the app's new log lines are checked too: "app log: N new issue(s)" lists errors, caught exceptions, network failures, StrictMode violations, 30+ skipped frames and out-of-memory lines from the app's processes.
+Every 10 actions (`ADT_MEMORY_EVERY`, 0 = off) the app's memory is sampled into the session's `performance.memory_trend`.
 Taps on an element go to a random point near its center that no other control covers; a fully covered element is refused (exit 4).
 
 | Command | Notes |
@@ -65,12 +68,14 @@ Taps on an element go to a random point near its center that no other control co
 
 | Command | Notes |
 |---|---|
+| `app find QUERY [--limit 8] [--json]` | find an installed app by its name as on the launcher ("Gmail") or its package id; prints `match:` for one sure hit, otherwise numbered candidates (name, package, version) for the user to pick. Names are read from each APK on the device (first lookup takes a while, then cached) |
 | `app list [FILTER] [--all]` | third-party packages unless `--all` |
 | `app current` | foreground package and activity |
 | `app info PKG` | versionName, versionCode, targetSdk |
 | `app launch PKG` | launcher intent (not an icon tap) |
 | `app stop PKG` | force-stop |
 | `app clear PKG` | wipes app data: ask first on physical devices |
+| `app reset PKG [--level restart\|clear-data] [--timeout 20]` | known start state: force-stop, clear data (`clear-data` only: ask first on personal devices), launch, wait until the app is in front and the screen settles; adds itself to the session's `setup_steps_fast`. Says so when a system permission dialog is on top |
 | `app install FILE` | `.apk`, or `.xapk` / `.apks` bundles (split APKs) |
 | `apk inspect FILE` | package, version, signing certificates per APK, permissions of note: run before installing a build from outside a store |
 
@@ -78,17 +83,26 @@ Taps on an element go to a random point near its center that no other control co
 
 | Command | Notes |
 |---|---|
-| `session start --dir RUN [--package P] [--mode explore\|test-case\|repro\|ui-review] [--charter C] [--ticket T] [--record] [--logcat]` | creates `screenshots/ videos/ logs/ bugs/`, `session.json`, `findings.json`; actions log to `logs/actions.jsonl` |
-| `session end [--discard-video]` | stops recording and logcat started by the session |
+| `session start [--dir RUN] [--package P] [--mode explore\|test-case\|repro\|ui-review\|retest\|memory] [--charter C] [--ticket T] [--record] [--logcat]` | creates `screenshots/ videos/ logs/ bugs/`, `session.json`, `findings.json`; actions log to `logs/actions.jsonl`. Without `--dir`: a new folder `<reports dir from .android-tester/config.yaml>/<date>-<app>-<mode>[-<ticket>]`. Fills `title` and `tester` from the profile and config when missing |
+| `session end [--discard-video] [--no-report]` | stops recording and logcat started by the session, then builds the report when `report check` passes (or lists the problems) |
 | `session status` | active run folder |
 | `record start --out FILE.mp4` / `record stop [--discard]` | 3-minute chunks joined with ffmpeg; writes `FILE.timeline.json` |
 | `clip --from T --to T --out FILE [--video V] [--pad 3]` | T = `t` from actions.jsonl, `HH:MM:SS` today, or epoch; default video is the session's |
 | `logcat start --out FILE [--keep]` / `logcat stop` | background stream |
 | `logcat crashes [--package PKG]` | crash buffer + FATAL/ANR lines since the last clear |
+| `logcat summary [--package PKG] [--run RUN]` | the app's errors, caught exceptions, network failures, StrictMode, long frame drops and out-of-memory lines in the session log, grouped and most serious first; saved as `log_summary` for the report |
 | `touches on --approval "..."` / `touches off` | "Show taps" markers in recordings; a system setting, needs approval on phones |
 | `hook NAME --package P [-- ARGS]` | runs `.android-tester/apps/P/hooks/NAME.(py\|sh\|ps1)` |
 | `check NAME --package P [-- ARGS]` | runs `.android-tester/apps/P/checks/NAME.(py\|sh\|ps1)` |
-| `report check RUN` / `report build RUN` | validate / render `index.html` and `bugs/<id>.md` |
+| `report check RUN` / `report build RUN` | validate / render `index.html` (finding list), `bugs/<id>.html` (one page per finding), `bugs/<id>.md` (Jira drafts) and `findings.csv` (Jira CSV import) |
+| `report confirm RUN ID --result reproduced\|not-reproduced --by NAME [--tries N/M] [--note] [--device] [--build]` | record a person's manual check in the finding's history, update its manual count and status, rebuild the report |
+| `issues list --package P [--status open\|fixed\|wont-fix\|duplicate\|all] [--json]` | the app's known issues (`.android-tester/apps/P/known-issues.json`) |
+| `issues sync RUN --package P` | register a run's new bugs and accessibility findings (with regression test case drafts in `tests/`), record sightings of known issues, reopen fixed ones found again |
+| `issues set K-n --package P --status fixed [--build] [--run] [--note]` | change an issue's status (e.g. after a retest) |
+| `perf startup PKG [--runs 3]` | median cold start (force-stops the app first) |
+| `perf frames PKG [--reset]` | janky frames and frame-time percentiles since the last reset |
+| `perf memory PKG [--flow NAME] [--settle 5]` | PSS, RSS and live objects (Activities, windows, app contexts, Views, WebViews); all perf commands save into the active session's `performance`. With `--flow`: a leak-check sample of that flow (baseline, then one after each cycle), taken after `--settle` seconds |
+| `perf leak PKG [--flow NAME]` | leak verdict per flow from its samples: "suspected leak" when object counts never drop and grow (Activities by 2+, Views by 100+) or PSS grows steadily by 10% and 8 MB; needs a baseline and 3+ cycles |
 
 Hook and check scripts receive `ANDROID_SERIAL`, `ADB`, `ADT` (command line for adt), `ADT_PACKAGE`, `ADT_APP_DIR`, `ADT_RUN_DIR`, and `ADT_SECRETS` when `secrets.local.yaml` exists.
 Python scripts run with `uv run --script`, so they may declare their own dependencies (PEP 723).

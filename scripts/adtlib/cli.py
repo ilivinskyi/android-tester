@@ -18,7 +18,22 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import apkinfo, capture, device, hierarchy, keyboard, report, session, state
+from . import (
+    apkinfo,
+    applog,
+    apps,
+    capture,
+    device,
+    hierarchy,
+    keyboard,
+    lifecycle,
+    perf,
+    project,
+    report,
+    screen,
+    session,
+    state,
+)
 from .adb import Adb, AdbError, DeviceError, find_adb, list_devices, run_adb
 from .human import Driver, Outcome
 
@@ -86,13 +101,19 @@ def _fresh_snapshot(adb: Adb) -> hierarchy.Snapshot:
     return device.snapshot(adb)[0]
 
 
-def _tap_point(snap: hierarchy.Snapshot, el: hierarchy.Element, args) -> tuple[int, int]:
-    if hierarchy.visible_point(snap, el) is None:
-        raise NotFound(f"{el.describe()} is covered by other controls (e.g. a toolbar or tab bar). "
-                       "Scroll it into view, or tap the control that covers it.")
+def _keyboard_area(adb: Adb) -> tuple[hierarchy.Bounds, ...]:
+    bounds = device.keyboard_bounds(adb)
+    return (bounds,) if bounds else ()
+
+
+def _tap_point(snap: hierarchy.Snapshot, el: hierarchy.Element, args,
+               blocked: tuple[hierarchy.Bounds, ...] = ()) -> tuple[int, int]:
+    if hierarchy.visible_point(snap, el, blocked) is None:
+        raise NotFound(f"{el.describe()} is covered by other controls (e.g. a toolbar, tab bar or the keyboard). "
+                       "Scroll it into view, close the keyboard, or tap the control that covers it.")
     if args.fast:
-        return hierarchy.visible_point(snap, el)
-    return hierarchy.human_point(snap, el, random.Random())
+        return hierarchy.visible_point(snap, el, blocked)
+    return hierarchy.human_point(snap, el, random.Random(), blocked)
 
 
 def _unique(matches: list[hierarchy.Element], what: str) -> hierarchy.Element:
@@ -125,25 +146,31 @@ def _search(adb: Adb, args, driver: Driver) -> tuple[hierarchy.Snapshot, hierarc
     return snap, _unique(_matches(snap, args), what)
 
 
-def _resolve_target(adb: Adb, args, driver: Driver) -> tuple[int, int, hierarchy.Element | None]:
+def _resolve_target(adb: Adb, args, driver: Driver) -> tuple[int, int, hierarchy.Element | None, str]:
+    """(x, y, app element or None, label for the output and the action log)."""
+    keyboard_area = _keyboard_area(adb)
     if args.index is not None:
         snap, _ = device.last_snapshot(adb.serial)
         el = snap.find(args.index)
-        return (*_tap_point(snap, el, args), el)
+        return (*_tap_point(snap, el, args, keyboard_area), el, el.describe())
     if args.text is not None or args.id is not None:
         snap, el = _search(adb, args, driver)
-        return (*_tap_point(snap, el, args), el)
+        return (*_tap_point(snap, el, args, keyboard_area), el, el.describe())
     if args.xy:
         x, y = args.xy
     else:
         _, data = device.last_snapshot(adb.serial)
         scale = data.get("preview_scale") or 1.0
         x, y = round(args.preview_xy[0] / scale), round(args.preview_xy[1] / scale)
+    if any(area.contains(x, y) for area in keyboard_area):
+        # The app's hierarchy doesn't know the keyboard: whatever it has under this point is hidden.
+        return x, y, None, f"keyboard key '{device.keyboard_key_at(adb, x, y)}'"
     try:
         snap, _ = device.last_snapshot(adb.serial)
-        return x, y, hierarchy.element_at(snap, x, y)
+        el = hierarchy.element_at(snap, x, y)
+        return x, y, el, el.describe() if el else ""
     except LookupError:
-        return x, y, None
+        return x, y, None, ""
 
 
 def _approval_log(adb: Adb, entry: dict) -> None:
@@ -234,13 +261,13 @@ def cmd_observe(args, adb: Adb) -> int:
 
 def cmd_tap(args, adb: Adb) -> int:
     driver = _driver(adb, args)
-    x, y, el = _resolve_target(adb, args, driver)
+    x, y, el, label = _resolve_target(adb, args, driver)
     action = "long-press" if args.long else "tap"
     _guard(adb, el, args.allow_risk, action)
     if el is not None and not el.enabled:
         print(f"note: target is disabled: {el.describe()}")
-    outcome = driver.tap(x, y, target=el.describe() if el else "", long=args.long)
-    print(f"{action} ({x},{y})" + (f" -> {el.describe()}" if el else ""))
+    outcome = driver.tap(x, y, target=label, long=args.long)
+    print(f"{action} ({x},{y})" + (f" -> {label}" if label else ""))
     _after(adb, args, outcome)
     return EXIT_OK
 
@@ -261,7 +288,7 @@ def cmd_type(args, adb: Adb) -> int:
     if args.index is not None:
         snap, _ = device.last_snapshot(adb.serial)
         el = snap.find(args.index)
-        driver.tap(*_tap_point(snap, el, args), target=el.describe())
+        driver.tap(*_tap_point(snap, el, args, _keyboard_area(adb)), target=el.describe())
     try:
         outcome = driver.type_text(args.text, fallback=args.fallback, submit=args.submit)
     except keyboard.CannotType as exc:
@@ -341,6 +368,8 @@ def cmd_app(args, adb: Adb) -> int:
             device.app_clear(adb, args.package)
             session.log_action(adb.serial, {"action": "app-clear", "mode": "setup", "package": args.package})
             print(f"cleared data of {args.package}")
+        case "reset":
+            return _app_reset(args, adb)
         case "install":
             path = Path(args.apk)
             if path.suffix.lower() in (".xapk", ".apks"):
@@ -358,7 +387,46 @@ def cmd_app(args, adb: Adb) -> int:
         case "current":
             package, activity = device.foreground_activity(adb)
             print(f"{package} {activity}")
+        case "find":
+            return _app_find(args, adb)
     return EXIT_OK
+
+
+def _app_reset(args, adb: Adb) -> int:
+    started = datetime.now().astimezone()
+    steps, foreground = device.app_reset(adb, args.package, args.level, timeout=args.timeout)
+    _, settled = screen.wait_stable(adb, timeout=8)
+    session.log_action(adb.serial, {"action": "app-reset", "mode": "setup", "package": args.package,
+                                    "level": args.level, "steps": steps}, started)
+    session.note_fast_step(adb.serial, f"reset ({args.level})")
+    print(f"reset {args.package} ({args.level}): {', '.join(steps)}")
+    if foreground != args.package:
+        print(f"note: a system permission dialog is on top ({foreground}); answering it is part of the setup")
+    if not settled:
+        print("note: the screen is still changing (splash, animation or video); observe before acting")
+    return EXIT_OK
+
+
+def _app_find(args, adb: Adb) -> int:
+    locale = adb.getprop("persist.sys.locale") or adb.getprop("ro.product.locale")
+    matches = apps.find(adb, args.query, locale=locale)[:args.limit]
+    if matches and matches[0].score == 100 and (len(matches) == 1 or matches[1].score < 100):
+        matches = matches[:1]  # an exact name or package: the near misses are noise
+    for m in matches:
+        try:
+            m.version = device.app_info(adb, m.package).get("versionName", "")
+        except AdbError:
+            m.version = ""
+    if args.json:
+        print(json.dumps([m.__dict__ for m in matches], ensure_ascii=False))
+    elif not matches:
+        print(f"no installed app matches '{args.query}'")
+    else:
+        sure = len(matches) == 1 and matches[0].score >= 85
+        print("match:" if sure else f"{len(matches)} candidate(s), best first; ask the user to pick one:")
+        for i, m in enumerate(matches, 1):
+            print(f"{i}. {m.describe()}")
+    return EXIT_OK if matches else EXIT_NOT_FOUND
 
 
 def cmd_logcat(args, adb: Adb) -> int:
@@ -372,6 +440,27 @@ def cmd_logcat(args, adb: Adb) -> int:
         case "crashes":
             text = capture.crashes(adb, args.package)
             print(text or "no crashes or ANRs")
+        case "summary":
+            return _logcat_summary(args, adb)
+    return EXIT_OK
+
+
+def _logcat_summary(args, adb: Adb) -> int:
+    run = Path(args.run) if args.run else session.latest_run_dir(adb.serial)
+    package = args.package or (json.loads((run / "session.json").read_text(encoding="utf-8")).get("package")
+                                if run else None)
+    if run is None or package is None:
+        raise ValueError("no session found: pass --run RUN and --package PKG")
+    groups = applog.session_summary(adb.serial, run, package)
+    path = run / "session.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["log_summary"] = groups
+    state.write_json(path, data)
+    if not groups:
+        print("no app errors or warnings in the session log")
+    for g in groups:
+        print(f"{g['count']:>4}x {g['kind']}, {g['tag']}: {g['text'][:150]} (first {g['first']})")
+    print(f"saved to {path} (log_summary)")
     return EXIT_OK
 
 
@@ -393,7 +482,13 @@ def cmd_record_worker(args, adb: Adb) -> int:
 
 
 def cmd_clip(args, adb: Adb) -> int:
-    video = Path(args.video) if args.video else (session.run_dir(adb.serial) or Path(".")) / "videos" / "session.mp4"
+    if args.video:
+        video = Path(args.video)
+    else:
+        run = session.latest_run_dir(adb.serial)
+        if run is None:
+            raise NotFound("no session recording known for this device; pass --video PATH")
+        video = run / "videos" / "session.mp4"
     start, end = capture.cut_clip(video, _parse_time(args.start), _parse_time(args.end), Path(args.out), args.pad)
     print(f"clip {Path(args.out).resolve()} = {video.name} {start:.1f}-{end:.1f}s")
     return EXIT_OK
@@ -412,7 +507,10 @@ def cmd_session(args, adb: Adb) -> int:
                     meta["app"] = device.app_info(adb, args.package)
                 except AdbError:
                     meta["app"] = {"package": args.package, "installed": False}
-            directory = session.start(adb.serial, Path(args.dir), meta)
+            # Folder, title and tester come from the project config, whichever skill (or person) started it.
+            directory = Path(args.dir) if args.dir else project.default_run_dir(args.package, args.mode, args.ticket)
+            defaults = {"title": project.default_title(args.package, args.mode), "tester": project.tester()}
+            directory = session.start(adb.serial, directory, meta, defaults)
             started = []
             if args.logcat:
                 capture.logcat_start(adb, directory / "logs" / "logcat.txt")
@@ -434,11 +532,28 @@ def cmd_session(args, adb: Adb) -> int:
                 print(f"recording: {capture.record_stop(adb, discard=args.discard_video)}")
             if "logcat" in started:
                 print(f"logcat: {capture.logcat_stop(adb)}")
-            print(f"session ended: {session.end(adb.serial)}")
+            run = session.end(adb.serial)
+            print(f"session ended: {run}")
+            if run and not args.no_report:
+                _report_after_session(run)
         case "status":
             active = session.active(adb.serial)
             print(json.dumps(active, indent=1) if active else "no active session")
     return EXIT_OK
+
+
+def _report_after_session(run: Path) -> None:
+    """Build the report as soon as the session ends, so it exists whatever drove the session.
+
+    The wrap-up (clips, known issues, confirmations) rebuilds it with `adt report build` afterwards.
+    """
+    problems = report.check(run)
+    if problems:
+        print(f"report not built yet, {len(problems)} problem(s) to fix first (adt report check {run}):")
+        for problem in problems[:5]:
+            print(f"  - {problem}")
+        return
+    print(f"report: {report.build(run)[0]}")
 
 
 def cmd_touches(args, adb: Adb) -> int:
@@ -483,13 +598,106 @@ def cmd_script(args, adb: Adb) -> int:
     return subprocess.run([*cmd, *args.script_args], env=env).returncode
 
 
+def cmd_perf(args, adb: Adb) -> int:
+    match args.perf_cmd:
+        case "startup":
+            result = perf.startup(adb, args.package, runs=args.runs)
+            print(f"cold start: {result['cold_start_ms']} ms (median of {result['samples_ms']})")
+        case "frames":
+            result = perf.frames(adb, args.package, reset=args.reset)
+            if args.reset:
+                print("frame stats reset")
+            else:
+                print(json.dumps(result))
+        case "leak":
+            return _perf_leak(args, adb)
+        case _:
+            if args.flow:
+                time.sleep(args.settle)  # let the app go idle (and garbage-collect) after the cycle
+            result = perf.memory(adb, args.package)
+            print(json.dumps(result))
+            if args.flow:
+                session.log_action(adb.serial, {"action": "perf-memory", "mode": "measure", "flow": args.flow,
+                                                **result})
+                path = perf.append(adb.serial, "leak_samples", {"flow": args.flow, **result})
+                print(f"sample for '{args.flow}' saved to {path}" if path else "no active session: not saved")
+                return EXIT_OK
+    session.log_action(adb.serial, {"action": f"perf-{args.perf_cmd}", "mode": "measure", **result})
+    if not result.get("reset") and (path := perf.record(adb.serial, args.perf_cmd, result)):
+        print(f"saved to {path}")
+    return EXIT_OK
+
+
+def _perf_leak(args, adb: Adb) -> int:
+    run = session.run_dir(adb.serial)
+    if run is None:
+        raise ValueError("no active session: leak samples live in its session.json")
+    path = run / "session.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    samples = data.get("performance", {}).get("leak_samples", [])
+    flows = [args.flow] if args.flow else list(dict.fromkeys(s["flow"] for s in samples))
+    if not flows:
+        print("no leak samples yet: run `adt perf memory PKG --flow NAME` before and after each cycle")
+        return EXIT_OK
+    leaks = data.setdefault("performance", {}).setdefault("leaks", {})
+    for flow in flows:
+        verdict = perf.leak_verdict([s for s in samples if s["flow"] == flow])
+        leaks[flow] = verdict
+        detail = "; ".join(f"{k} {' > '.join(map(str, v))}" for k, v in verdict["growing"].items())
+        print(f"{flow}: {verdict['verdict']} after {verdict['cycles']} cycle(s)" + (f" ({detail})" if detail else ""))
+    state.write_json(path, data)
+    print(f"saved to {path} (performance.leaks)")
+    return EXIT_OK
+
+
 def cmd_apk(args) -> int:
     result = apkinfo.inspect(Path(args.file))
     print(json.dumps(result, indent=1) if args.json else apkinfo.to_text(result))
     return EXIT_OK if result["same_signer_for_all"] else EXIT_BLOCKED
 
 
+def _report_confirm(args) -> int:
+    run = Path(args.dir)
+    result = lifecycle.confirm_in_run(run, args.finding, result=args.result, by=args.by, tries=args.tries,
+                                      note=args.note or "", device=args.device, build=args.build)
+    f, entry = result["finding"], result["entry"]
+    print(f"{f['id']}: {entry['result']} {entry['tries']} by {entry['by']}; manual now "
+          f"{f['reproducibility']['manual']}, status {f['status']}")
+    if (run / "index.html").exists():
+        report.build(run)
+        print("report rebuilt")
+    return EXIT_OK
+
+
+def cmd_issues(args) -> int:
+    config = Path(args.config_dir)
+    match args.issues_cmd:
+        case "list":
+            issues = lifecycle.load_registry(config, args.package)["issues"]
+            shown = [i for i in issues if args.status in ("all", i["status"])]
+            if args.json:
+                print(json.dumps(shown, ensure_ascii=False, indent=1))
+            elif not shown:
+                print(f"no {args.status} known issues for {args.package}")
+            for i in shown if not args.json else []:
+                last = i["seen"][-1]
+                print(f"{i['key']}  {i['status']:<9} {i.get('severity') or '-':<8} {i['title']}  "
+                      f"(seen {len(i['seen'])}x, last {last['date']} build {last['build']}"
+                      + (f", test {i['test_case']}" if i.get("test_case") else "") + ")")
+        case "sync":
+            result = lifecycle.sync_registry(Path(args.dir), config, args.package)
+            added, seen = ", ".join(result["added"]) or "none", ", ".join(result["seen_again"]) or "none"
+            print(f"added: {added}; seen again: {seen}")
+        case "set":
+            issue = lifecycle.set_issue(config, args.package, args.key, args.status, note=args.note or "",
+                                        run=args.run or "", build=args.build or "")
+            print(f"{issue['key']} is now {issue['status']}")
+    return EXIT_OK
+
+
 def cmd_report(args) -> int:
+    if args.report_cmd == "confirm":
+        return _report_confirm(args)
     run = Path(args.dir)
     problems = report.check(run)
     if args.report_cmd == "check" or problems:
@@ -612,12 +820,22 @@ def build_parser() -> argparse.ArgumentParser:
         ap.add_argument("package")
         if name == "launch":
             _add_settle(ap)
+    ap = app.add_parser("reset", help="known start state: force-stop, clear data (clear-data), launch, wait")
+    ap.add_argument("package")
+    ap.add_argument("--level", choices=device.RESET_LEVELS, default="restart",
+                    help="restart keeps the app's data; clear-data makes it like a fresh install (ask first on "
+                         "personal devices)")
+    ap.add_argument("--timeout", type=float, default=20, help="seconds to wait for the app to come up")
     ap = app.add_parser("install")
     ap.add_argument("apk")
     ap = app.add_parser("list")
     ap.add_argument("filter", nargs="?", default="")
     ap.add_argument("--all", action="store_true", help="include system packages")
     app.add_parser("current")
+    ap = app.add_parser("find", help="find an installed app by name (as on the launcher) or package id")
+    ap.add_argument("query")
+    ap.add_argument("--limit", type=int, default=8)
+    ap.add_argument("--json", action="store_true")
 
     p = sub.add_parser("logcat", help="background logcat capture and crash extraction")
     log = _subparsers(p, common, dest="log_cmd", required=True)
@@ -627,6 +845,10 @@ def build_parser() -> argparse.ArgumentParser:
     log.add_parser("stop")
     lp = log.add_parser("crashes")
     lp.add_argument("--package", help="only crash blocks mentioning this package")
+    lp = log.add_parser("summary", help="the app's errors and warnings in the session log, grouped; saved for the "
+                                        "report")
+    lp.add_argument("--package", help="default: the session's package")
+    lp.add_argument("--run", help="default: the active or last session")
 
     p = sub.add_parser("record", help="screen recording, chunked past the 3 min screenrecord limit")
     rec = _subparsers(p, common, dest="rec_cmd", required=True)
@@ -645,15 +867,17 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("session", help="standard run folder, action log, capture")
     ses = _subparsers(p, common, dest="session_cmd", required=True)
     sp = ses.add_parser("start")
-    sp.add_argument("--dir", required=True, help="run folder, e.g. reports/<date>-<app>-explore")
+    sp.add_argument("--dir", help="run folder (default: <reports dir from the config>/<date>-<app>-<mode>"
+                                  "[-<ticket>])")
     sp.add_argument("--package")
-    sp.add_argument("--mode", choices=["explore", "test-case", "repro", "ui-review"])
+    sp.add_argument("--mode", choices=["explore", "test-case", "repro", "ui-review", "retest", "memory"])
     sp.add_argument("--charter")
     sp.add_argument("--ticket")
     sp.add_argument("--record", action="store_true", help="record the screen to videos/session.mp4")
     sp.add_argument("--logcat", action="store_true", help="stream logcat to logs/logcat.txt")
-    sp = ses.add_parser("end")
+    sp = ses.add_parser("end", help="stop capture and build the report (when report check passes)")
     sp.add_argument("--discard-video", action="store_true")
+    sp.add_argument("--no-report", action="store_true", help="don't build the report now")
     ses.add_parser("status")
 
     p = sub.add_parser("touches", help="'Show taps' markers for recordings (system setting: needs approval on phones)")
@@ -667,6 +891,23 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--config-dir", default=".android-tester")
         p.add_argument("script_args", nargs="*", help="arguments for the script, after --")
 
+    p = sub.add_parser("perf", help="cold start time, frame stats and memory (saved into the active session)")
+    prf = _subparsers(p, common, dest="perf_cmd", required=True)
+    pp = prf.add_parser("startup", help="median cold start of N launches (force-stops the app first)")
+    pp.add_argument("package")
+    pp.add_argument("--runs", type=int, default=3)
+    pp = prf.add_parser("frames", help="rendered/janky frames and frame-time percentiles since the last reset")
+    pp.add_argument("package")
+    pp.add_argument("--reset", action="store_true", help="start counting now (session start)")
+    pp = prf.add_parser("memory", help="PSS/RSS and live objects (Activities, Views, ...) of the app")
+    pp.add_argument("package")
+    pp.add_argument("--flow", help="leak check: save this as a sample of the named flow (baseline, then after "
+                                   "each cycle)")
+    pp.add_argument("--settle", type=float, default=5, help="seconds to wait before a --flow sample (default 5)")
+    pp = prf.add_parser("leak", help="leak verdict per flow from the --flow samples (needs 3+ cycles)")
+    pp.add_argument("package")
+    pp.add_argument("--flow", help="only this flow")
+
     p = sub.add_parser("apk", help="inspect APK / .xapk / .apks files (no device needed)")
     apk = _subparsers(p, common, dest="apk_cmd", required=True)
     ap = apk.add_parser("inspect", help="package, version, signers per APK, permissions of note")
@@ -678,18 +919,46 @@ def build_parser() -> argparse.ArgumentParser:
     for name in ("check", "build"):
         rp = rep.add_parser(name)
         rp.add_argument("dir")
+    rp = rep.add_parser("confirm", help="record a person's reproduction attempt on a finding, then rebuild")
+    rp.add_argument("dir")
+    rp.add_argument("finding", help="finding id, e.g. B3")
+    rp.add_argument("--result", required=True, choices=list(lifecycle.CONFIRM_RESULTS))
+    rp.add_argument("--by", required=True, help="who tried it")
+    rp.add_argument("--tries", help="succeeded/attempted, e.g. 2/2 (default 1/1 or 0/1)")
+    rp.add_argument("--note")
+    rp.add_argument("--device", help="default: the session's device")
+    rp.add_argument("--build", help="default: the session's build")
+
+    p = sub.add_parser("issues", help="the app's known-issues registry (.android-tester/apps/<package>/)")
+    iss = _subparsers(p, common, dest="issues_cmd", required=True)
+    for name in ("list", "sync", "set"):
+        ip = iss.add_parser(name)
+        ip.add_argument("--package", required=True)
+        ip.add_argument("--config-dir", default=".android-tester")
+        if name == "list":
+            ip.add_argument("--status", default="open", choices=["all", *lifecycle.ISSUE_STATUSES])
+            ip.add_argument("--json", action="store_true")
+        elif name == "sync":
+            ip.add_argument("dir", help="run folder whose findings to register")
+        else:
+            ip.add_argument("key", help="e.g. K-3")
+            ip.add_argument("--status", required=True, choices=list(lifecycle.ISSUE_STATUSES))
+            ip.add_argument("--note")
+            ip.add_argument("--run", help="run folder name the change comes from (retest)")
+            ip.add_argument("--build")
 
     p = sub.add_parser("_record-worker", help=argparse.SUPPRESS)
     p.add_argument("stop_flag")
     return parser
 
 
-_NO_DEVICE = {"doctor": cmd_doctor, "devices": cmd_devices, "report": cmd_report, "apk": cmd_apk}
+_NO_DEVICE = {"doctor": cmd_doctor, "devices": cmd_devices, "report": cmd_report, "apk": cmd_apk,
+              "issues": cmd_issues}
 _WITH_DEVICE = {
     "info": cmd_info, "observe": cmd_observe, "tap": cmd_tap, "type": cmd_type, "key": cmd_key,
     "swipe": cmd_swipe, "scroll": cmd_scroll, "wait": cmd_wait, "app": cmd_app, "logcat": cmd_logcat,
     "record": cmd_record, "clip": cmd_clip, "session": cmd_session, "touches": cmd_touches,
-    "hook": cmd_script, "check": cmd_script, "_record-worker": cmd_record_worker,
+    "hook": cmd_script, "check": cmd_script, "perf": cmd_perf, "_record-worker": cmd_record_worker,
 }
 
 

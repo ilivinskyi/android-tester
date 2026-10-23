@@ -71,7 +71,7 @@ flowchart TD
 
 | Skill | Starts | Purpose |
 |---|---|---|
-| `android-native-tester` | When you type `/android-native-tester` | Onboarding on first use, the session interview, a session in one of four modes, the standard report |
+| `android-native-tester` | When you type `/android-native-tester`, or ask in plain words to test an app ("explore the Notes app for 15 minutes") | Onboarding on first use, the session interview, a session in one of six modes, the standard report |
 | `android-human-input` | Automatically, whenever a device is driven | The rules for human-like input and honest reproduction |
 | `android-device` | Automatically | Reference for the `adt` command-line tool that does the device work |
 
@@ -185,11 +185,13 @@ Open Claude Code in a folder where reports and settings should live (for example
 /android-native-tester
 ```
 
+Asking in plain words works too ("test the Notes app on my phone, 15 minutes"): the request loads the same skill, with your config and auto mode.
+
 1. **Onboarding (first time only).**
-   Your name for reports, the reports folder, an optional Jira project, your devices (and which one is personal), an app profile with a description of your app in your own words, and whether to use auto mode.
+   Your name for reports, the reports folder, an optional Jira project, your devices (and which one is personal), an app profile with a description of your app in your own words, whether to report problems noticed outside a session's scope (and which unfinished areas to never report), and whether to use auto mode.
    Everything is saved in `.android-tester/` so later sessions start straight away.
 2. **Session interview.**
-   Which app or build, a ticket or context, the mode, the charter, the device, the time box, and what evidence to collect.
+   Which app (type its name as on your phone, or its package id; Claude finds it on the device and lets you pick when several match) or build file, a ticket or context, the mode, the charter, the device, the time box, and what evidence to collect.
    The skill sums it up as a plan and waits for your go.
 3. **Preparation.**
    Device check, build check and install when needed, your setup hooks, then recording and logcat start.
@@ -205,6 +207,16 @@ Open Claude Code in a folder where reports and settings should live (for example
 | `test-case` | `/android-native-tester test-case tests/TC-001.md` | Runs written test cases step by step and reports pass, fail or blocked per step |
 | `repro` | `/android-native-tester repro PROJ-123` | Reproduces a reported bug, narrows the trigger one variable at a time, confirms with a person |
 | `ui-review` | `/android-native-tester ui-review com.example.app` | Accessibility (touch targets, labels, contrast, screen-reader text) and visual review |
+| `retest` | `/android-native-tester retest com.example.app` | Runs the regression test cases of the app's open known issues on a new build and marks each Fixed, Still reproduces or Can't verify |
+| `memory` | `/android-native-tester memory com.example.app` | Repeats flows and watches live Activities, Views and memory per cycle to find leaks |
+
+In every mode, the app's own log is checked after each action (errors, caught exceptions, network failures, out of memory), and memory is sampled every 10 actions; both end up in the report.
+
+### After the session
+
+- **Confirm findings by hand.** Tell Claude "B3 reproduced 2 of 2 on my phone" (or run `adt report confirm`): the finding gets a history entry, its manual count and status update, and the report is rebuilt.
+- **Known issues.** Every bug lands in the app's known-issues registry with a regression test case draft. Later sessions link a known bug found again ("K-3 seen again") instead of reporting it as new, and reopen fixed issues that come back.
+- **Crashes and performance.** A crash is caught at the action that caused it. Each session records cold start time, janky frames and memory, so a slower build shows up in the report.
 
 If the short name clashes with another command, use the namespaced form `/android-tester:android-native-tester`.
 
@@ -212,8 +224,10 @@ If the short name clashes with another command, use the namespaced form `/androi
 
 ```
 reports/2026-10-23-myapp-explore/
-  index.html        the report: summary, session facts, findings, test results, not covered
+  index.html        the finding list: summary, findings grouped by severity, search, filters
+  bugs/B1.html      one page per finding: Jira copy buttons, steps, expected and actual, evidence viewer
   bugs/B1.md        Jira-ready bug drafts, one per bug and accessibility finding
+  findings.csv      every bug and accessibility finding, for Jira's CSV import
   findings.json     machine-readable findings
   session.json      device, app, ticket, charter, timing, environment
   screenshots/      evidence, with the UI hierarchy XML next to each screenshot
@@ -233,9 +247,11 @@ Onboarding writes this into the folder you test from:
   config.yaml                 tester, reports, Jira, device inventory, auto mode
   apps/<package>/
     profile.yaml              what the app is and how it works (about), store URL, expected signer,
-                              login method, hooks, risky areas
+                              login method, reset strategy, hooks, risky areas
     notes.md                  what testers learn over time: screen map, quirks, known issues
     hooks/  checks/           your setup, reset, teardown and login scripts and custom checks
+    known-issues.json         bugs found across sessions, their status and where they were seen
+    tests/                    regression test cases, one per known issue (drafted automatically)
     secrets.local.yaml        test credentials, filled in by you (keep it out of git)
 ```
 
@@ -253,6 +269,9 @@ Add `.adt/` and `.android-tester/**/secrets.local.yaml` to your `.gitignore`; on
 | Types on the keyboard, with autocorrect | `input text` pastes past the keyboard | Taps the keyboard's own keys, including shift and symbol layers |
 
 `--fast` switches back to instant input for setup steps only (installing, resetting data, getting to the start state), and every fast step is marked in the report.
+
+Every run that is compared with another starts from the same state: the session itself, each reproduction attempt, each test case and each retested known issue.
+`adt app reset` restarts the app, or clears its data first so it is like a fresh install; which one is set per app in its profile (or an app-specific reset script), and clearing data on a personal phone is always asked first.
 
 ## Guardrails
 

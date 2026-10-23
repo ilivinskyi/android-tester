@@ -46,6 +46,13 @@ class Layer:
     title: str
     chars: dict[str, Key] = field(default_factory=dict)
     specials: dict[str, Key] = field(default_factory=dict)
+    bounds: Bounds | None = None  # the keyboard window on screen
+
+    def key_at(self, x: int, y: int) -> Key | None:
+        for key in (*self.chars.values(), *self.specials.values()):
+            if key.bounds.contains(x, y):
+                return key
+        return None
 
     @property
     def kind(self) -> str:
@@ -78,7 +85,7 @@ def parse_layer(xml: str, ime_package: str) -> Layer | None:
                  if n.get("package") == ime_package and n.get("clickable") == "true"]
         if not nodes:
             continue
-        layer = Layer(title=window.get("title", ""))
+        layer = Layer(title=window.get("title", ""), bounds=Bounds.parse(window.get("bounds", "")))
         for node in nodes:
             desc = (node.get("content-desc") or node.get("text") or "").strip()
             rid = (node.get("resource-id") or "").rsplit("/", 1)[-1]

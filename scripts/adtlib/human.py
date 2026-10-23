@@ -6,12 +6,13 @@ reset, reaching the start state); it uses instant adb input and is marked as suc
 
 from __future__ import annotations
 
+import os
 import random
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
-from . import device, keyboard, screen, session
+from . import applog, capture, device, keyboard, perf, screen, session, state
 from .adb import Adb
 from .hierarchy import Bounds
 
@@ -27,6 +28,9 @@ class Pace:
     swipe_ms: tuple[int, int]
 
 
+# Session memory trend: a meminfo sample every N actions (about a second each); 0 turns it off.
+MEMORY_EVERY = int(os.environ.get("ADT_MEMORY_EVERY", "10"))
+
 PACES = {
     "human": Pace("human", (0.4, 1.4), (60, 150), (700, 1000), (40, 90), (0.05, 0.2), (280, 520)),
     "slow": Pace("slow", (1.0, 2.5), (80, 180), (800, 1200), (60, 120), (0.12, 0.35), (400, 700)),
@@ -37,14 +41,26 @@ PACES = {
 class Outcome:
     changed: bool | None = None   # None when not verified
     settled: bool | None = None
+    crash: str | None = None      # summary of a crash written to the crash buffer during this action
+    log_issues: list[str] = field(default_factory=list)  # the app's new errors and warnings in logcat
 
     def warning(self) -> str | None:
-        if self.changed is False:
-            return ("WARNING: no visible change after this action. It may have hit dead space, a covering "
-                    "overlay, or a stale position. Observe before continuing.")
-        if self.settled is False:
-            return "note: the screen was still changing after 5 s (animation, video or loading)."
-        return None
+        lines = []
+        if self.crash:
+            lines.append(f"CRASH right after this action: {self.crash}. Capture evidence now (observe, "
+                         "`adt logcat crashes`), note the action log time for the clip, then continue per the "
+                         "session's crash rule.")
+        elif self.changed is False:
+            lines.append("WARNING: no visible change after this action. It may have hit dead space, a covering "
+                         "overlay, or a stale position. Observe before continuing.")
+        elif self.settled is False:
+            lines.append("note: the screen was still changing after 5 s (animation, video or loading).")
+        if self.log_issues:
+            shown = "; ".join(self.log_issues[:3]) + (f" (+{len(self.log_issues) - 3} more)"
+                                                       if len(self.log_issues) > 3 else "")
+            lines.append(f"app log: {len(self.log_issues)} new issue(s) since the last action: {shown}. "
+                         "Judge whether it explains what you see; many apps log harmless errors.")
+        return "\n".join(lines) or None
 
 
 class Driver:
@@ -76,6 +92,10 @@ class Driver:
         entry = {"action": action, "mode": "fast" if self.fast else self.pace.name, **details}
         if outcome.changed is not None:
             entry["changed"] = outcome.changed
+        if outcome.crash:
+            entry["crash"] = outcome.crash
+        if outcome.log_issues:
+            entry["log_issues"] = outcome.log_issues
         session.log_action(self.adb.serial, entry, started=started)
 
     def _perform(self, action: str, do, verify: bool = True, **details) -> Outcome:
@@ -89,9 +109,28 @@ class Driver:
         outcome = Outcome()
         if before is not None:
             after, outcome.settled = screen.wait_stable(self.adb)
-            outcome.changed = screen.changed_ratio(before, after) >= screen.SAME_SCREEN
+            outcome.changed = screen.differs(before, after)
+        # Crash watch: a crash is caught at the step that caused it, not at wrap-up.
+        if crash_lines := capture.new_crashes(self.adb):
+            outcome.crash = capture.crash_summary(crash_lines)
+        self._watch_session(outcome)
         self._log(action, outcome, acted, **details)
         return outcome
+
+    def _watch_session(self, outcome: Outcome) -> None:
+        """During a session: the app's new log issues, and a memory sample every MEMORY_EVERY actions."""
+        run, package = session.run_dir(self.adb.serial), session.package(self.adb.serial)
+        if run is None or package is None:
+            return
+        outcome.log_issues = [issue.short() for issue in applog.new_issues(self.adb, run, package)]
+        counter_file = state.device_dir(self.adb.serial) / "memory_trend.json"
+        counter = state.read_json(counter_file) or {}
+        count = (counter.get("actions", 0) + 1) if counter.get("run") == str(run) else 1
+        state.write_json(counter_file, {"run": str(run), "actions": count})
+        if MEMORY_EVERY and count % MEMORY_EVERY == 0:
+            sample = perf.memory(self.adb, package)
+            perf.append(self.adb.serial, "memory_trend",
+                        {"t": datetime.now().astimezone().isoformat(timespec="seconds"), "action": count, **sample})
 
     # --- actions ---------------------------------------------------------------------------------
 

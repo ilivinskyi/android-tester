@@ -33,6 +33,14 @@ def test_parse_letters_layer(fixture_xml):
     assert {"shift", "delete", "to_symbols", "action"} <= layer.specials.keys()
 
 
+def test_keyboard_window_bounds_and_key_at(fixture_xml):
+    layer = keyboard.parse_layer(fixture_xml("gboard_letters.xml"), IME)
+    assert (layer.bounds.top, layer.bounds.bottom) == (1517, 2400)
+    assert layer.key_at(60, 1730).name == "q"
+    assert layer.key_at(990, 2196).name == "Search"
+    assert layer.key_at(540, 100) is None
+
+
 def test_parse_symbol_layers_by_spoken_names(fixture_xml):
     symbols = keyboard.parse_layer(fixture_xml("gboard_symbols.xml"), IME)
     assert symbols.kind == "symbols" and {"1", "@", "#", "$", "(", "?"} <= symbols.chars.keys()

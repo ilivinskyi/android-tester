@@ -8,10 +8,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from . import annotate, hierarchy, state
+from . import annotate, hierarchy, keyboard, state
 from .adb import Adb, AdbError
 from .fingerprint import screen_fingerprint
-from .hierarchy import Snapshot
+from .hierarchy import Bounds, Snapshot
 
 _REMOTE_DUMP = "/sdcard/adt_dump.xml"
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
@@ -38,7 +38,48 @@ def dump_windows(adb: Adb) -> str:
     out = adb.shell("uiautomator", "dump", "--windows", remote, check=False, timeout=30)
     if "dumped to" not in out:
         raise AdbError(f"uiautomator dump --windows failed: {out.strip() or 'no output'}")
-    return adb.exec_out("cat", remote).decode("utf-8", errors="replace")
+    xml = adb.exec_out("cat", remote).decode("utf-8", errors="replace")
+    _remember_keyboard(adb, xml)
+    return xml
+
+
+def _ime_package(adb: Adb) -> str:
+    return facts(adb)["ime"].split("/", 1)[0]
+
+
+def _remember_keyboard(adb: Adb, xml: str) -> None:
+    layer = keyboard.parse_layer(xml, _ime_package(adb))
+    if layer and layer.bounds and layer.bounds.area:
+        b = layer.bounds
+        state.write_json(state.device_dir(adb.serial) / "keyboard.json", {"bounds": [b.left, b.top, b.right, b.bottom]})
+
+
+def keyboard_visible(adb: Adb) -> bool:
+    out = adb.shell("dumpsys input_method | grep mInputShown", check=False)
+    return "mInputShown=true" in out
+
+
+def keyboard_bounds(adb: Adb) -> Bounds | None:
+    """Where the on-screen keyboard is, or None when it's hidden.
+
+    The app's hierarchy doesn't include the keyboard, so without this a tap on a key is attributed to
+    the app element underneath, and an element under the keyboard looks tappable when it isn't.
+    The position is cached; it's refreshed by every keyboard dump (e.g. while typing).
+    """
+    if not keyboard_visible(adb):
+        return None
+    cached = state.read_json(state.device_dir(adb.serial) / "keyboard.json")
+    if not cached:
+        dump_windows(adb)
+        cached = state.read_json(state.device_dir(adb.serial) / "keyboard.json")
+    return Bounds(*cached["bounds"]) if cached else None
+
+
+def keyboard_key_at(adb: Adb, x: int, y: int) -> str:
+    """Name of the keyboard key at a point, for logs ('Search', 'q', 'Delete')."""
+    layer = keyboard.parse_layer(dump_windows(adb), _ime_package(adb))
+    key = layer.key_at(x, y) if layer else None
+    return key.name if key else "keyboard"
 
 
 def screenshot(adb: Adb) -> bytes:
@@ -286,6 +327,45 @@ def app_clear(adb: Adb, package: str) -> None:
     out = adb.shell("pm", "clear", package)
     if "Success" not in out:
         raise AdbError(f"pm clear {package}: {out.strip()}")
+
+
+RESET_LEVELS = ("restart", "clear-data")
+# Runtime permission dialogs belong to the permission controller, not to the app that asked.
+PERMISSION_UI = ("com.google.android.permissioncontroller", "com.android.permissioncontroller")
+
+
+def reset_ready(foreground: str, package: str) -> bool:
+    """Whether a relaunched app counts as up, given the package in the foreground.
+
+    After clear-data the app is like a fresh install, so a system permission dialog may sit on top of it.
+    """
+    # TODO(human)
+
+
+def app_reset(adb: Adb, package: str, level: str, timeout: float = 20.0) -> tuple[list[str], str]:
+    """Back to a known start: force-stop, clear the app's data (clear-data only), launch, wait until it's up.
+
+    Returns the steps done and the foreground package at the end.
+    """
+    if level not in RESET_LEVELS:
+        raise ValueError(f"level must be one of {RESET_LEVELS}")
+    app_info(adb, package)  # fails early when the package isn't installed
+    app_stop(adb, package)
+    steps = ["force-stop"]
+    if level == "clear-data":
+        app_clear(adb, package)
+        steps.append("clear data")
+    app_launch(adb, package)
+    steps.append("launch")
+    deadline = time.monotonic() + timeout
+    foreground = ""
+    while time.monotonic() < deadline:
+        foreground = foreground_activity(adb)[0]
+        if reset_ready(foreground, package):
+            return steps, foreground
+        time.sleep(0.5)
+    raise AdbError(f"{package} did not come to the foreground within {timeout:.0f}s "
+                   f"(foreground: {foreground or 'unknown'})")
 
 
 def app_install(adb: Adb, apk: Path) -> str:

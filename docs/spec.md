@@ -12,11 +12,11 @@ Decisions from the initial interview (2026-10-23), revised after the Jumbo sessi
 
 | Skill | Invoked | Purpose |
 |---|---|---|
-| `android-native-tester` | Manually, `/android-native-tester` | Onboarding (first launch), per-session interview, runs a session in one of four modes, writes the standard report. |
+| `android-native-tester` | `/android-native-tester`, or any request to test an app | Onboarding (first launch), per-session interview, runs a session in one of six modes, writes the standard report. Other skills hand test requests to it, so the project config always applies. |
 | `android-human-input` | Automatically whenever a device is driven | Rules for acting like a person: pacing, press duration, tap position, navigation, typing, evidence hygiene. Also the default instruction inside `android-native-tester`. |
 | `android-device` | Automatically | Reference for the `adt` CLI. |
 
-Modes of `android-native-tester` (guides in its folder, not separate skills): explore, test case, bug repro, UI review.
+Modes of `android-native-tester` (guides in its folder, not separate skills): explore, test case, bug repro, UI review, retest, memory.
 
 ## Human-like input (default)
 
@@ -37,7 +37,9 @@ Modes of `android-native-tester` (guides in its folder, not separate skills): ex
   The skill then offers a manual attempt: it sets up the start state, records, and compares the person's run with the automated one.
 - Reproducibility is reported as N of M, separately for automated and manual runs.
 - Change one variable at a time when narrowing a trigger.
-- Preconditions and test-data state are part of every bug; hooks reset state between runs.
+- Preconditions and test-data state are part of every bug.
+- Every compared run starts from the same state: the session, each reproduction attempt, each test case and each retested issue begin with a reset (`adt app reset --level restart|clear-data`, or the app's reset hook), as the profile's `reset.strategy` says.
+  Clearing data on a personal device needs the user's yes, once per session.
 - Repro runs keep UI-hierarchy dumps to a minimum (they turn on the accessibility layer) and verify with plain screenshots.
 - Before reporting a finding, check the raw source (hierarchy XML, logcat) that proves it.
 
@@ -49,7 +51,7 @@ Modes of `android-native-tester` (guides in its folder, not separate skills): ex
   Expected behaviour, test ideas and severity come from it and the ticket; the skills carry no assumptions about any app domain.
 - Auto mode: one list of every decision the skill would otherwise ask about, each with a default the user confirms or changes.
   Guardrails (payments, messages, account changes, accepting terms, system settings on a personal phone) are never automatic.
-- Per-session interview at every run: ticket and context, mode, device, build installed or to install, focus, time budget.
+- Per-session interview at every run: ticket and context, mode, device, build installed or to install, start state, focus, time budget.
   In auto mode it only asks what has no default.
 - Files: `.android-tester/config.yaml` (team defaults, devices, auto mode), `.android-tester/apps/<package>/profile.yaml`, `notes.md`, `hooks/`, `checks/`, and gitignored `secrets.local.yaml`.
 - App scripts: lifecycle hooks (setup, reset, teardown), login helper, custom checks, app knowledge notes.
@@ -61,8 +63,15 @@ Modes of `android-native-tester` (guides in its folder, not separate skills): ex
 
 ## Report standard
 
-- Every session writes one run folder: `session.json`, `findings.json`, `index.html`, `bugs/<id>.md`, `screenshots/`, `videos/`, `logs/`.
-- `adt report build` renders HTML and per-bug Markdown from the JSON; `adt report check` validates required fields and file links.
+- Every session writes one run folder: `session.json`, `findings.json`, `index.html`, `bugs/<id>.html`, `bugs/<id>.md`, `findings.csv`, `screenshots/`, `videos/`, `logs/`.
+- `adt report build` renders the finding list (findings grouped by severity in compact rows with priority, status and a two-line summary; search with `/`, filters by type, severity and status kept in the URL, `j`/`k` keyboard navigation), one page per finding (Copy for Jira, Copy title and Copy wiki markup at the top; phone-framed evidence; a viewer for screenshots and videos with close button, Esc, click outside, arrows, swipe, zoom, caption and original; Previous/Next following the filtered list), per-bug Markdown and a CSV for Jira's bulk import; `adt report check` validates required fields and file links.
+- Problems noticed outside the charter are findings with `scope: outside`: their own section, not counted. Per app, `outside_scope.report` switches them off and `outside_scope.not_ready` lists unfinished areas that are never reported.
+- Bug lifecycle: found, confirmed by a person (`adt report confirm`, kept in the finding's `history`), registered as a known issue per app with a regression test case draft (`adt issues sync`), retested on new builds (`retest` mode), marked fixed (`adt issues set`), reopened automatically when seen again.
+- Crash watch: the crash buffer is read after every action; a crash is reported at the step that caused it.
+- App log watch: after every action the new lines of the session's logcat stream are read and the app's own errors, caught exceptions, network failures, StrictMode violations, long frame drops and out-of-memory lines are shown and logged; `adt logcat summary` groups them for the report. They aren't findings automatically: many apps log harmless errors.
+- Memory: a sample every 10 actions (trend in the report), and a memory mode that repeats flows and compares live Activities, Views and PSS per cycle to find leaks.
+- Performance per session: median cold start, janky frames and frame-time percentiles, memory (PSS/RSS), shown in the report.
+- Apps are chosen by name or package: `adt app find` reads launcher labels from each APK on the device (manifest and resources.arsc only) and lists candidates when several match.
 - Finding fields: id, title, type (bug, accessibility, observation), severity (Blocker, Critical, Major, Minor, Trivial), suggested priority (P1-P4), status (Confirmed, Unconfirmed, Retracted), environment, preconditions, steps, expected, actual, reproducibility (automated and manual N of M), evidence, notes.
 - Session fields: charter, mode, ticket, tester, device and app facts (including navigation mode, keyboard, install source, input method), time box, coverage, not covered, setup steps run with `--fast`.
 

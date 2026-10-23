@@ -306,14 +306,21 @@ def element_at(snapshot: Snapshot, x: int, y: int) -> Element | None:
 _SAMPLE_FRACTIONS = (0.5, 0.35, 0.65, 0.2, 0.8, 0.1, 0.9)
 
 
-def visible_point(snapshot: Snapshot, target: Element) -> tuple[int, int] | None:
+def _covering(snapshot: Snapshot, target: Element, blocked: tuple[Bounds, ...]) -> list[Bounds]:
+    b = target.bounds
+    regions = [e.bounds for e in _occluders(snapshot, target)] + list(blocked)
+    return [r for r in regions if r.clip(b).area > 0]
+
+
+def visible_point(snapshot: Snapshot, target: Element, blocked: tuple[Bounds, ...] = ()) -> tuple[int, int] | None:
     """A point inside `target` that no other interactive element covers, closest to its center.
 
+    `blocked`: screen areas covered by something outside the app's hierarchy, such as the keyboard.
     None means the element is fully covered (e.g. a hidden button under another control, or a row
-    behind the bottom navigation): scroll it into view or pick a different target.
+    behind the bottom navigation or the keyboard): scroll it into view or pick a different target.
     """
     b = target.bounds
-    occluders = [e for e in _occluders(snapshot, target) if e.bounds.clip(b).area > 0]
+    covering = _covering(snapshot, target, blocked)
     cx, cy = b.center
     candidates = sorted(
         {(b.left + round(b.width * fx), b.top + round(b.height * fy))
@@ -321,27 +328,28 @@ def visible_point(snapshot: Snapshot, target: Element) -> tuple[int, int] | None
         key=lambda p: (p[0] - cx) ** 2 + (p[1] - cy) ** 2,
     )
     for x, y in candidates:
-        if b.contains(x, y) and not any(o.bounds.contains(x, y) for o in occluders):
+        if b.contains(x, y) and not any(r.contains(x, y) for r in covering):
             return x, y
     return None
 
 
-def human_point(snapshot: Snapshot, target: Element, rng: random.Random) -> tuple[int, int] | None:
+def human_point(snapshot: Snapshot, target: Element, rng: random.Random,
+                blocked: tuple[Bounds, ...] = ()) -> tuple[int, int] | None:
     """Where a finger would land: near the center, never exactly on it, never on a covering control.
 
     Gaussian around the center (sigma 15% of the size), kept inside the middle 80% of the element.
     """
     b = target.bounds
-    occluders = [e for e in _occluders(snapshot, target) if e.bounds.clip(b).area > 0]
+    covering = _covering(snapshot, target, blocked)
     cx, cy = b.center
     for _ in range(40):
         x = round(rng.gauss(cx, b.width * 0.15))
         y = round(rng.gauss(cy, b.height * 0.15))
         inside = (b.left + b.width * 0.1 <= x <= b.right - b.width * 0.1
                   and b.top + b.height * 0.1 <= y <= b.bottom - b.height * 0.1)
-        if inside and not any(o.bounds.contains(x, y) for o in occluders):
+        if inside and not any(r.contains(x, y) for r in covering):
             return x, y
-    return visible_point(snapshot, target)
+    return visible_point(snapshot, target, blocked)
 
 
 def _norm(text: str) -> str:

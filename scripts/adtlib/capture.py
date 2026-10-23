@@ -43,6 +43,37 @@ def logcat_stop(adb: Adb) -> Path | None:
 _CRASH_MARKERS = re.compile(r"FATAL EXCEPTION|ANR in |Process: .* PID: |\bSIGSEGV\b|Fatal signal")
 
 
+def new_lines(seen: int, lines: list[str]) -> tuple[list[str], int]:
+    """Lines added to a log since `seen` lines were read. A shorter log means it was cleared."""
+    if len(lines) < seen:
+        seen = 0
+    return lines[seen:], len(lines)
+
+
+def crash_summary(lines: list[str]) -> str:
+    """'com.example.app: java.lang.IllegalStateException: ...' from new crash-buffer lines."""
+    process = next((m.group(1) for line in lines if (m := re.search(r"Process: ([\w.:]+)", line))), "")
+    cause = next((line.split(": ", 1)[-1].strip() for line in lines
+                  if re.search(r"\b\w+(\.\w+)+(Exception|Error)\b", line)), "")
+    signal = next((line.split("Fatal signal", 1)[-1].strip() for line in lines if "Fatal signal" in line), "")
+    return ": ".join(p for p in (process, cause or (f"Fatal signal {signal}" if signal else "")) if p) or lines[0]
+
+
+def new_crashes(adb: Adb) -> list[str]:
+    """Crash-buffer lines written since the last call (crash watch after every action)."""
+    seen_file = state.device_dir(adb.serial) / "crash_seen.json"
+    baseline = state.read_json(seen_file)
+    text = adb.run("logcat", "-b", "crash", "-d", check=False, timeout=15).decode("utf-8", errors="replace")
+    lines = [line for line in text.splitlines() if line.strip()]
+    if baseline is None:
+        # First check on this device: older crashes in the buffer aren't news.
+        state.write_json(seen_file, {"lines": len(lines)})
+        return []
+    fresh, total = new_lines(baseline.get("lines", 0), lines)
+    state.write_json(seen_file, {"lines": total})
+    return [line for line in fresh if not line.startswith("--------- beginning of")]
+
+
 def crashes(adb: Adb, package: str | None = None) -> str:
     """Crash buffer plus ANR / fatal lines from the main buffer since the last `logcat -c`."""
     crash_buf = adb.run("logcat", "-d", "-b", "crash", "-v", "threadtime", check=False).decode(errors="replace")
@@ -134,8 +165,8 @@ def record_stop(adb: Adb, discard: bool = False) -> Path | None:
         adb.run("pull", f"{_REMOTE_REC_DIR}/{name}", str(local), timeout=120)
         local_chunks.append(local)
     adb.shell("rm", "-rf", _REMOTE_REC_DIR, check=False)
-    _write_timeline(adb, local_chunks, out_file)
-    return _join_chunks(local_chunks, out_file)
+    timeline = _write_timeline(adb, local_chunks, out_file)
+    return _join_chunks(local_chunks, out_file, [c["span"] for c in timeline])
 
 
 def _duration(path: Path) -> float | None:
@@ -150,29 +181,45 @@ def _duration(path: Path) -> float | None:
         return None
 
 
-def _write_timeline(adb: Adb, chunks: list[Path], out_file: Path) -> None:
+def build_timeline(chunks: list[tuple[float | None, float | None]]) -> list[dict]:
+    """(wall start, measured duration) per chunk -> timeline entries.
+
+    screenrecord only writes frames when the screen changes, so a chunk's measured duration ends at its
+    last frame: a still screen at the end of a chunk would drop out of the joined video and make it run
+    ahead of the clock. Each chunk therefore spans until the next one started (its wall-clock length);
+    only the last chunk uses its measured duration.
+    """
+    timeline, video_pos = [], 0.0
+    for i, (wall_start, duration) in enumerate(chunks):
+        next_start = chunks[i + 1][0] if i + 1 < len(chunks) else None
+        span = next_start - wall_start if wall_start is not None and next_start is not None else duration
+        timeline.append({"wall_start": wall_start, "video_start": round(video_pos, 3), "duration": duration,
+                         "span": round(span, 3) if span is not None else None})
+        video_pos += span or 0.0
+    return timeline
+
+
+def _write_timeline(adb: Adb, chunks: list[Path], out_file: Path) -> list[dict]:
     starts = {}
     log = _chunk_log(adb)
     if log.is_file():
         for line in log.read_text(encoding="utf-8").splitlines():
             entry = json.loads(line)
             starts[entry["name"]] = entry["wall"]
-    timeline, video_pos = [], 0.0
-    for chunk in chunks:
-        name = chunk.name.split(".", 1)[1]  # "<stem>.chunk_000.mp4" -> "chunk_000.mp4"
-        duration = _duration(chunk)
-        timeline.append({"wall_start": starts.get(name), "video_start": round(video_pos, 3), "duration": duration})
-        video_pos += duration or 0.0
+    # "<stem>.chunk_000.mp4" -> "chunk_000.mp4"
+    timeline = build_timeline([(starts.get(c.name.split(".", 1)[1]), _duration(c)) for c in chunks])
     state.write_json(out_file.with_suffix(".timeline.json"), {"chunks": timeline})
+    return timeline
 
 
 def video_position(timeline: dict, wall: float) -> float | None:
     """Seconds into the joined video for a wall-clock time, or None if it falls outside the recording."""
     for chunk in timeline["chunks"]:
-        start, duration = chunk["wall_start"], chunk["duration"]
-        if start is None or duration is None:
+        start = chunk["wall_start"]
+        length = chunk.get("span") or chunk["duration"]  # older timelines have no span
+        if start is None or length is None:
             return None
-        if start <= wall <= start + duration:
+        if start <= wall <= start + length:
             return chunk["video_start"] + (wall - start)
     return None
 
@@ -200,7 +247,17 @@ def cut_clip(video: Path, wall_from: float, wall_to: float, out: Path, pad: floa
     return start, end
 
 
-def _join_chunks(chunks: list[Path], out_file: Path) -> Path:
+def concat_listing(chunks: list[Path], spans: list[float | None]) -> str:
+    """ffmpeg concat list; `duration` makes each chunk last its wall-clock span (the last frame holds)."""
+    lines = []
+    for chunk, span in zip(chunks, spans, strict=True):
+        lines.append(f"file '{chunk.resolve().as_posix()}'")
+        if span:
+            lines.append(f"duration {span:.3f}")
+    return "\n".join(lines) + "\n"
+
+
+def _join_chunks(chunks: list[Path], out_file: Path, spans: list[float | None]) -> Path:
     if len(chunks) == 1:
         chunks[0].replace(out_file)
         return out_file
@@ -209,7 +266,7 @@ def _join_chunks(chunks: list[Path], out_file: Path) -> Path:
         # Keep the parts; the report can still link them in order.
         return chunks[0]
     listing = out_file.with_suffix(".txt")
-    listing.write_text("".join(f"file '{c.resolve().as_posix()}'\n" for c in chunks), encoding="utf-8")
+    listing.write_text(concat_listing(chunks, spans), encoding="utf-8")
     proc = subprocess.run(
         [ffmpeg, "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(listing), "-c", "copy",
          str(out_file)],
