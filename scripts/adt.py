@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["pillow>=11"]
+# dependencies = ["pillow>=11", "pyyaml>=6"]
 # ///
 """Entry point: `uv run --script scripts/adt.py <command>`. See `--help`."""
 

@@ -5,6 +5,8 @@ description: Use when tapping, typing, swiping, scrolling, navigating back or ho
 
 # Human-like Android input
 
+When the input is part of testing an app (a session, a bug reproduction, test cases), the `android-native-tester` skill runs the session; load it first if it isn't loaded.
+
 ## Overview
 
 A test only means something if the app received the same input a person would give it.

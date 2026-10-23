@@ -4,7 +4,7 @@
 name = "android-tester"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = ["pillow>=11"]
+dependencies = ["pillow>=11", "pyyaml>=6"]
 
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.12"]

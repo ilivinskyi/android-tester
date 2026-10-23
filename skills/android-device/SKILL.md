@@ -16,6 +16,11 @@ Below, `adt` stands for that whole prefix.
 Full options for every command: [reference.md](reference.md).
 **REQUIRED:** follow the `android-human-input` skill for every UI action.
 
+**Testing an app is not this skill's job.** When the user wants an app tested (exploring it, test cases, reproducing a bug, a UI review, a retest, or anything that should end in a report), load the `android-native-tester` skill first and follow it.
+It reads the project config (auto mode, reports folder, tester, guardrails) and runs the interview, the session and the report; this skill is the command reference it uses.
+Without it, sessions miss the config: wrong folder, no tester, and decisions the user automated get asked again.
+Use this skill on its own only for one-off device tasks: a screenshot, checking what's installed, reading logcat, a quick tap.
+
 ## Before anything else
 
 1. Run `adt doctor`. It must show adb and at least one device in state `device`.
@@ -45,7 +50,7 @@ Exit codes: 4 not found or covered, 5 guardrail block, 6 decision needed (e.g. a
 - On `BLOCKED`, or whenever you judge a screen to be a purchase, outgoing message/post/review, account deletion/logout/password change, or accepting terms: stop and ask the user.
 - Only after explicit approval of that one action, rerun with `--allow-risk "<quote of the user's approval>"`.
 - The classifier knows English labels only; judge other languages and unlabelled icons yourself.
-- `adt app clear` wipes app data and `adt touches on` changes a system setting: on a physical device ask first.
+- `adt app clear` and `adt app reset --level clear-data` wipe app data and `adt touches on` changes a system setting: on a physical device ask first.
 
 ## Sessions and evidence
 
