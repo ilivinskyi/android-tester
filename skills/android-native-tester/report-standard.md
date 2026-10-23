@@ -1,15 +1,21 @@
 # Report standard
 
 Every session produces one run folder.
-`adt report check RUN` enforces the rules marked *(checked)*; `adt report build RUN` renders `index.html` and `bugs/<id>.md`.
-The renderer lives in `scripts/adtlib/report.py`; keep this file and it in sync.
+`adt report check RUN` enforces the rules marked *(checked)*; `adt report build RUN` renders:
+- `index.html`: the finding list, grouped by severity (then observations, findings outside the scope, and retracted ones), one row per finding (priority, status, short summary), with search and filters.
+- `bugs/<id>.html`: one page per finding with Copy for Jira (the description in Markdown), Copy title and Copy wiki markup (Jira Server and Data Center) at the top, all fields, and phone-framed evidence with a viewer.
+- `bugs/<id>.md`: Jira-ready drafts for bugs and accessibility findings that aren't retracted, including those outside the scope.
+- `findings.csv`: the same findings for Jira's CSV import (Summary, Description in wiki markup, Issue Type, Priority, Labels).
+Validation and the build live in `scripts/adtlib/report.py`, the pages in `report_html.py`, the text formats in `report_text.py`; keep this file and them in sync.
 
 ```
 RUN/
   session.json      session facts (adt session start writes the device and app parts)
   findings.json     {"findings": [...]}
-  index.html        rendered report
+  index.html        the finding list
+  bugs/<id>.html    one page per finding
   bugs/<id>.md      one Jira-ready file per bug and accessibility finding
+  findings.csv      Jira CSV import of the same findings
   screenshots/  videos/  logs/ (actions.jsonl, logcat.txt, decisions.md)
 ```
 
@@ -17,18 +23,20 @@ RUN/
 
 | Field | Content |
 |---|---|
-| `title` *(checked)* | "<App name> Android - <mode>", e.g. "<App name> Android - exploratory test" |
+| `title` *(checked)* | "<App name> Android - <mode>", e.g. "<App name> Android - exploratory test"; `adt session start` sets it when missing |
 | `subtitle` | version, device, date and duration in one line |
 | `mode` *(checked)*, `charter` *(checked)* | from the interview |
 | `ticket` | `{"key", "url", "summary"}` or a string |
-| `tester` | from the config |
+| `tester` | from the config; `adt session start` sets it when missing |
 | `started`, `ended`, `time_box_min` | `adt session start/end` write the times |
 | `device` *(checked)* | written by `adt session start` (model, Android, navigation, keyboard, locale, ...) |
 | `app` *(checked)* | `package`, `versionName`, `versionCode`, plus `install_source` ("Play Store", "file Foo.xapk, signer verified") |
 | `input` | how input was driven; `adt session start` writes "adt human mode" |
 | `setup_steps_fast` | steps run with `--fast`, e.g. `["install", "clear data"]` |
 | `summary` | 3-5 sentences: overall state, the most serious problems, what needs attention |
-| `test_results` | test-case mode: `[{"case", "step", "result": pass/fail/blocked/skipped, "finding", "note"}]`; fail/blocked need a finding or note *(checked)* |
+| `test_results` | test-case mode: `[{"case", "step", "result": pass/fail/blocked/skipped, "finding", "note"}]`; fail/blocked need a finding or note *(checked)*. Retest mode adds `"issue": "K-n"`; the report then reads pass as Fixed, fail as Still reproduces, blocked as Can't verify |
+| `performance` | written by `adt perf`: `startup` (cold start median and samples), `frames` (janky %, percentiles), `memory` (PSS, RSS, live Activities, Views and other objects), `memory_trend` (a sample every 10 actions), `leak_samples` and `leaks` (memory mode: verdict per flow) |
+| `log_summary` | written by `adt logcat summary`: the app's errors and warnings in the session log, grouped (kind, tag, text, count, first time); shown as "App log" |
 | `worked_well`, `coverage`, `not_covered` | lists of short sentences; `not_covered` is required reading for the reader, always fill it |
 | `evidence` | `{"session_video": "videos/session.mp4", "logcat": "logs/logcat.txt", "action_log": "logs/actions.jsonl"}` |
 
@@ -68,6 +76,10 @@ RUN/
 | `steps`, `expected`, `actual` *(checked for bug)* | `expected` and `actual` also for accessibility; observations need `actual` |
 | `reproducibility` *(checked for bug)* | `automated` and/or `manual` as "N/M" or "not tried"; Unconfirmed must state `manual` *(checked)*; a Blocker/Critical/Major confirmed only by automation is rejected *(checked)* |
 | `evidence` *(checked: files exist)* | `screenshot`, `video`, `log`, `xml`, `other`, paths relative to RUN |
+| `scope` | `in` (default) or `outside`: noticed outside the charter. Outside findings need only `title`, `type`, `status` and `actual` (plus evidence), are listed separately, and don't count as bugs |
+| `summary` | one line for the bug list; defaults to the start of `actual` |
+| `known_issue` *(checked: K-n)* | key in the app's known-issues registry: set it yourself when a finding matches an open known issue (shown as "seen again"); `adt issues sync` sets it, plus `new_issue: true`, for newly registered ones |
+| `history` *(checked: time, action)* | written by `adt report confirm` (manual checks) and retests: who, when, result, tries, build, device, status change, note; shown as a timeline |
 
 ## Severity
 

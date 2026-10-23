@@ -1,23 +1,26 @@
+import csv
+import io
 import json
 
 import pytest
 
-from adtlib import report
+from adtlib import report, report_html, report_text
 
 SESSION = {
-    "title": "Shop app - exploratory test", "mode": "explore", "charter": "Guest basket journey",
-    "tester": "Test Er", "ticket": {"key": "SHOP-1", "summary": "Basket"},
+    "title": "Notes app Android - exploratory test", "mode": "explore", "charter": "Editing and sync",
+    "tester": "Test Er", "ticket": {"key": "PROJ-1", "summary": "Editor"},
     "device": {"model": "Pixel 7a", "android": "17", "sdk": "37", "emulator": False, "navigation": "gesture",
                "keyboard": "com.google.android.inputmethod.latin/x", "locale": "en-US"},
-    "app": {"package": "com.example.shop", "versionName": "1.0", "versionCode": "10"},
-    "input": "adt human mode", "not_covered": ["Checkout"],
+    "app": {"package": "com.example.notes", "versionName": "1.0", "versionCode": "10"},
+    "input": "adt human mode", "not_covered": ["Sync conflicts"],
 }
 
 
 def _bug(**over):
     bug = {
-        "id": "B1", "title": "Quantity sticks at 0", "type": "bug", "status": "Confirmed", "severity": "Medium",
-        "priority": "P2", "steps": ["Add milk", "Type 999"], "expected": "Capped", "actual": "Shows 0",
+        "id": "B1", "title": "Number field sticks at 0", "type": "bug", "status": "Confirmed", "severity": "Medium",
+        "priority": "P2", "steps": ["Open a note", "Type 999 in the counter"], "expected": "Capped",
+        "actual": "Shows 0",
         "reproducibility": {"automated": "2/2", "manual": "1/1"},
         "evidence": [{"type": "screenshot", "path": "screenshots/b1.png", "caption": "stuck"}],
     }
@@ -38,27 +41,51 @@ def run(tmp_path):
     return write
 
 
-def test_valid_run_passes_and_builds(run):
-    findings = [
-        _bug(severity="Major"),
-        _bug(id="B2", status="Unconfirmed", severity="Major", reproducibility={"automated": "17/18", "manual": "0/2"}),
-        {"id": "A1", "title": "Label read twice", "type": "accessibility", "status": "Confirmed",
-         "severity": "Minor", "expected": "Read once", "actual": "Read twice"},
-        {"id": "O1", "title": "Odd copy", "type": "observation", "status": "Confirmed", "actual": "Mixed u/je"},
-        {"id": "R1", "title": "Prices missing", "type": "accessibility", "status": "Retracted",
-         "notes": "Parser dropped them"},
-    ]
-    directory = run(findings)
+FULL = [
+    _bug(severity="Major"),
+    _bug(id="B2", status="Unconfirmed", severity="Major", reproducibility={"automated": "17/18", "manual": "0/2"}),
+    {"id": "A1", "title": "Label read twice", "type": "accessibility", "status": "Confirmed",
+     "severity": "Minor", "expected": "Read once", "actual": "Read twice"},
+    {"id": "O1", "title": "Odd copy", "type": "observation", "status": "Confirmed", "actual": "Mixed tone"},
+    {"id": "O2", "title": "Settings icon misaligned", "type": "observation", "status": "Confirmed",
+     "scope": "outside", "actual": "On Settings, the gear icon sits 4 px low."},
+    {"id": "R1", "title": "Values missing", "type": "accessibility", "status": "Retracted",
+     "notes": "Parser dropped them"},
+]
+
+
+def test_valid_run_passes_and_builds_list_and_pages(run):
+    directory = run(FULL)
     assert report.check(directory) == []
-    written = report.build(directory)
-    page = (directory / "index.html").read_text(encoding="utf-8")
-    for fid in ("B1", "B2", "A1", "O1", "R1"):
-        assert f'id="{fid}"' in page
-    assert "Unconfirmed: needs manual reproduction" in page and "Retracted during the session" in page
-    assert {p.name for p in written} == {"index.html", "B1.md", "B2.md", "A1.md"}
+    written = {p.name for p in report.build(directory)}
+    assert written == {"index.html", "findings.csv", "B1.md", "B2.md", "A1.md",
+                       "B1.html", "B2.html", "A1.html", "O1.html", "O2.html", "R1.html"}
+    index = (directory / "index.html").read_text(encoding="utf-8")
+    for fid in ("B1", "B2", "A1", "O1", "O2", "R1"):
+        assert f'href="bugs/{fid}.html"' in index
+    assert "Noticed outside the scope" in index and "Retracted" in index
+    # Outside-scope findings are not counted in the headline.
+    assert "1 bug," not in index and "2 bugs, 1 accessibility issue and 1 observation" in index
     md = (directory / "bugs" / "B1.md").read_text(encoding="utf-8")
-    assert "**Steps to reproduce:**" in md and "1. Add milk" in md and "gesture navigation" in md
-    assert "SHOP-1" in md
+    assert "**Steps to reproduce:**" in md and "1. Open a note" in md and "gesture navigation" in md
+    assert "PROJ-1" in md
+
+
+def test_bug_page_has_viewer_navigation_and_jira_copy(run):
+    directory = run(FULL)
+    report.build(directory)
+    page = (directory / "bugs" / "B1.html").read_text(encoding="utf-8")
+    assert 'href="../index.html"' in page
+    assert '<dialog class="viewer"' in page and 'class="icon close"' in page and "Open original" in page
+    assert 'data-full="../screenshots/b1.png"' in page
+    for copy in ("copy-md", "copy-title", "copy-wiki"):
+        assert f'data-copy="{copy}"' in page and f'<template id="{copy}">' in page
+    # The description goes into Jira's Description field; the title has its own button.
+    description = page.split('<template id="copy-md">', 1)[1].split("</template>", 1)[0]
+    assert "Number field sticks at 0" not in description and "**Steps to reproduce:**" in description
+    assert 'rel="next"' in page
+    observation = (directory / "bugs" / "O1.html").read_text(encoding="utf-8")
+    assert 'data-copy="' not in observation  # no Jira draft for observations
 
 
 def test_problems_are_reported(run):
@@ -68,6 +95,7 @@ def test_problems_are_reported(run):
         _bug(id="B3", status="Unconfirmed", reproducibility={"automated": "3/3"}),
         _bug(id="B4", severity="Major", reproducibility={"automated": "3/3"}),  # Major, automation only
         {"id": "R1", "title": "x", "type": "bug", "status": "Retracted"},       # no reason
+        {"id": "O1", "title": "x", "type": "observation", "status": "Confirmed", "scope": "elsewhere"},
     ])
     problems = "\n".join(report.check(directory))
     assert "finding B1: severity must be one of" in problems
@@ -76,11 +104,18 @@ def test_problems_are_reported(run):
     assert "finding B3: an Unconfirmed finding must state the manual result" in problems
     assert "finding B4: a Major bug confirmed only by automation should be Unconfirmed" in problems
     assert "finding R1: a retracted finding must say why" in problems
+    assert "finding O1: scope must be one of" in problems
+
+
+def test_outside_scope_findings_need_only_what_was_seen(run):
+    directory = run([{"id": "B9", "title": "Crash on Help screen", "type": "bug", "status": "Confirmed",
+                      "scope": "outside", "actual": "Opening Help closes the app."}])
+    assert report.check(directory) == []
 
 
 def test_test_results_rendered_and_validated(run, tmp_path):
     session = dict(SESSION, mode="test-case", test_results=[
-        {"case": "TC-1 Add to basket", "step": 2, "result": "fail", "finding": "B1"},
+        {"case": "TC-1 Create a note", "step": 2, "result": "fail", "finding": "B1"},
         {"case": "TC-2 Search", "result": "pass"},
     ])
     (tmp_path / "session.json").write_text(json.dumps(session), encoding="utf-8")
@@ -88,15 +123,125 @@ def test_test_results_rendered_and_validated(run, tmp_path):
     assert report.check(directory) == []
     report.build(directory)
     page = (directory / "index.html").read_text(encoding="utf-8")
-    assert "Test results" in page and 'href="#B1"' in page and "PASS" in page
+    assert "Test results" in page and 'href="bugs/B1.html">B1' in page and "Pass" in page
 
     session["test_results"].append({"case": "TC-3", "result": "blocked"})
     (tmp_path / "session.json").write_text(json.dumps(session), encoding="utf-8")
     assert any("needs 'finding' or 'note'" in p for p in report.check(directory))
 
 
-def test_html_escapes_content(run):
-    directory = run([_bug(severity="Minor", title="<script>alert(1)</script>")])
+def test_history_known_issue_and_performance_are_shown(run, tmp_path):
+    session = dict(SESSION, performance={
+        "startup": {"cold_start_ms": 812, "samples_ms": [790, 812, 905]},
+        "frames": {"frames": 465, "janky": 17, "janky_pct": 3.66, "p50_ms": 7, "p90_ms": 12, "p99_ms": 48},
+        "memory": {"pss_kb": 248054, "rss_kb": 445580}})
+    (tmp_path / "session.json").write_text(json.dumps(session), encoding="utf-8")
+    history = [{"time": "2026-10-24T09:12:00+02:00", "action": "manual-check", "result": "reproduced",
+                "tries": "2/2", "by": "Ihor", "build": "1.0 (10)", "device": "Pixel 7a",
+                "status": "Unconfirmed -> Confirmed"}]
+    directory = run([_bug(severity="Minor", known_issue="K-3", history=history),
+                     _bug(id="B2", severity="Minor", known_issue="K-4", new_issue=True)])
+    assert report.check(directory) == []
     report.build(directory)
-    page = (directory / "index.html").read_text(encoding="utf-8")
-    assert "<script>alert(1)</script>" not in page and "&lt;script&gt;" in page
+    index = (directory / "index.html").read_text(encoding="utf-8")
+    assert "K-3 seen again" in index and "1 is a known issue seen again" in index
+    assert "812 ms (median of 3 launches" in index and "3.66% janky (17 of 465 frames)" in index
+    assert "242 MB PSS" in index
+    page = (directory / "bugs" / "B1.html").read_text(encoding="utf-8")
+    sentence = ("Manual check: reproduced 2/2 by Ihor, on Pixel 7a with build 1.0 (10). "
+                "Status: Unconfirmed to Confirmed.")
+    assert sentence in page and "Known issue K-3" in page
+    md = (directory / "bugs" / "B1.md").read_text(encoding="utf-8")
+    assert f"- 2026-10-24 09:12 {sentence}" in md and "**Known issue:** K-3 (seen again)" in md
+
+
+def test_retest_results_use_bug_lifecycle_words(run, tmp_path):
+    session = dict(SESSION, mode="retest", test_results=[
+        {"case": "K-3 Field resets after rotation", "issue": "K-3", "result": "pass"},
+        {"case": "K-4 Crash on Help", "issue": "K-4", "result": "fail", "note": "Still crashes"},
+    ])
+    (tmp_path / "session.json").write_text(json.dumps(session), encoding="utf-8")
+    directory = run([])
+    report.build(directory)
+    index = (directory / "index.html").read_text(encoding="utf-8")
+    assert "Retest results" in index and "Fixed" in index and "Still reproduces" in index
+
+
+def test_bad_known_issue_and_history_are_reported(run):
+    directory = run([_bug(severity="Minor", known_issue="3", history=[{"action": "manual-check"}])])
+    problems = "\n".join(report.check(directory))
+    assert "known_issue must look like 'K-3'" in problems and "history[1] needs 'time' and 'action'" in problems
+
+
+def test_html_escapes_content(run):
+    directory = run([_bug(severity="Minor", title="<script>alert(1)</script>",
+                          notes="ends </script> early")])
+    report.build(directory)
+    for page in ("index.html", "bugs/B1.html"):
+        text = (directory / page).read_text(encoding="utf-8")
+        assert "<script>alert(1)</script>" not in text
+    bug_page = (directory / "bugs" / "B1.html").read_text(encoding="utf-8")
+    # The copy texts are escaped inside <template>, so the page keeps exactly its one script.
+    assert bug_page.count("</script>") == 1 and "ends &lt;/script&gt; early" in bug_page
+
+
+def test_list_is_grouped_by_severity_and_pages_follow_it(run):
+    directory = run([
+        _bug(id="B10", severity="Minor", priority="P3"),
+        _bug(id="B2", severity="Major", priority="P2"),
+        _bug(id="B3", severity="Major", priority="P1"),
+        {"id": "O1", "title": "Odd copy", "type": "observation", "status": "Confirmed", "actual": "Mixed tone"},
+        _bug(id="B1", severity="Minor", priority="P3"),
+    ])
+    report.build(directory)
+    index = (directory / "index.html").read_text(encoding="utf-8")
+    positions = [index.index(f'data-id="{fid}"') for fid in ("B3", "B2", "B1", "B10", "O1")]
+    assert positions == sorted(positions)
+    assert index.index(">Major<") < index.index(">Minor<") < index.index(">Observations<")
+    page = (directory / "bugs" / "B2.html").read_text(encoding="utf-8")
+    assert 'id="prev" rel="prev" href="B3.html"' in page and 'id="next" rel="next" href="B1.html"' in page
+    assert "2 of 5" in page
+
+
+def test_csv_and_wiki_markup_for_jira(run):
+    directory = run(FULL)
+    report.build(directory)
+    rows = list(csv.reader(io.StringIO((directory / "findings.csv").read_text(encoding="utf-8"))))
+    assert rows[0] == ["Summary", "Description", "Issue Type", "Priority", "Labels", "Labels", "Labels"]
+    by_summary = {r[0]: r for r in rows[1:]}
+    assert set(by_summary) == {"[B1] Number field sticks at 0", "[B2] Number field sticks at 0",
+                               "[A1] Label read twice"}  # no observations, nothing retracted
+    b1 = by_summary["[B1] Number field sticks at 0"]
+    assert b1[2:] == ["Bug", "High", "android-tester", "severity-major", "type-bug"]
+    assert "*Steps to reproduce:*\n# Open a note\n# Type 999 in the counter" in b1[1]
+    wiki = report_text.render_jira_wiki(SESSION, _bug(notes="See [this] {code}"))
+    assert r"*Notes:* See \[this\] \{code\}" in wiki and "{{screenshots/b1.png}}" in wiki
+
+
+def test_outputs_of_findings_that_no_longer_qualify_are_removed(run):
+    directory = run([_bug(severity="Minor")])
+    report.build(directory)
+    assert (directory / "bugs" / "B1.md").is_file() and (directory / "findings.csv").is_file()
+    run([_bug(severity="Minor", status="Retracted", notes="Expected behaviour")])
+    report.build(directory)
+    assert not (directory / "bugs" / "B1.md").exists() and not (directory / "findings.csv").exists()
+    page = (directory / "bugs" / "B1.html").read_text(encoding="utf-8")
+    assert "Why it was retracted" in page and "Expected behaviour" in page
+
+
+def test_page_order_puts_outside_scope_then_retracted_last():
+    findings = [{"id": "R1", "title": "x", "type": "bug", "status": "Retracted"},
+                {"id": "B9", "title": "x", "type": "bug", "status": "Confirmed", "scope": "outside",
+                 "severity": "Blocker"},
+                _bug(id="B1", severity="Trivial")]
+    assert [f["id"] for f in report_html.page_order(findings)] == ["B1", "B9", "R1"]
+
+
+def test_app_log_section_lists_grouped_issues(run, tmp_path):
+    session = dict(SESSION, log_summary=[{"kind": "network", "tag": "System.err", "count": 3,
+                                          "text": "java.net.SocketTimeoutException: timeout", "first": "10-23 15:04"}])
+    (tmp_path / "session.json").write_text(json.dumps(session), encoding="utf-8")
+    directory = run([])
+    report.build(directory)
+    index = (directory / "index.html").read_text(encoding="utf-8")
+    assert "<h2>App log</h2>" in index and "3x network" in index and "SocketTimeoutException" in index
