@@ -59,7 +59,7 @@ This plugin addresses each of these, with rules the model follows and a CLI that
 ## How it works
 
 ```mermaid
-flowchart LR
+flowchart TD
     U["/android-native-tester"] --> A["android-native-tester skill<br/>onboarding, interview, modes, report"]
     A --> H["android-human-input skill<br/>rules for human-like input"]
     A --> D["android-device skill<br/>adt CLI reference"]
