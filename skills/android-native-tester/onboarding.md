@@ -26,7 +26,7 @@ Ask:
 
 Ask whether to set up an app profile now (it can also be created at the first session for that app).
 For each app, create `.android-tester/apps/<package>/` from the templates:
-- `profile.yaml`: name, package, store URL, expected signer, login method, which hooks run when, risky areas,
+- `profile.yaml`: name, package, store URL, expected signer, login method, reset strategy (see "Start state" below), which hooks run when, risky areas,
   and the `about` block (see "Describe the app" below).
 - `notes.md`: what testers learn over time (screen map, quirks, known issues, test accounts by name only). The app's purpose and rules belong in `about`, not here.
 - `hooks/` and `checks/` with the example scripts, only when the user wants scripts.
@@ -43,6 +43,28 @@ This is the most important part of the profile: without it the model can only gu
    Use the app's own terms; don't add flows or rules the user didn't mention.
 4. Read back the main flows and rules in one short list and ask whether they're right.
 5. If the user prefers not to describe it now, leave `about` empty. The first session then asks for it (see the session interview).
+
+### Start state
+
+Reruns are only comparable when each one starts from the same state.
+Ask: "How should I bring the app back to a known start state before each run?" and save the answer as `reset.strategy`:
+- **Clear data** (recommended when the login can be redone without the user: guest, secrets or a login hook): like a fresh install every time. On a personal device it still asks first, once per session.
+- **Restart**: force-stop and relaunch. Keeps data and login; choose it when the user logs in by hand or the data is slow to set up.
+- **Script**: an app-specific reset hook that removes only what tests leave behind (e.g. items added to a list) and keeps the login. Copy `templates/hooks/reset.py` and set `hooks.reset`.
+- **Never**: the user prepares the state by hand.
+
+Then ask what a fresh start looks like (intro screens, region or language choice) and how to get past it, and save the steps in plain words as `reset.after`.
+Anything that accepts terms or consent stays a guardrail: it is asked each time, never written into `reset.after`.
+
+### Problems outside the session's scope
+
+Sessions have a charter, but testers notice things elsewhere too. Ask two questions for each app:
+1. "When I notice a problem outside the session's scope (another screen, an unrelated feature), should I report it?"
+   Yes (recommended): it goes into a separate "Outside scope" section of the report, not counted as a bug, for the team to triage.
+   No: such problems are not mentioned at all.
+   Save as `outside_scope.report`.
+2. "Are there screens or features that are still being built, which should never be reported even when they look broken?"
+   Save the list in the user's own words as `outside_scope.not_ready`.
 
 ## 4. Auto mode
 

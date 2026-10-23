@@ -16,7 +16,7 @@ With auto mode off, the skill asks at each of these points.
 | `unconfirmed_repro` | A bug reproduces only through automation | `queue_manual_request` | `queue_manual_request` (ask at wrap-up), `ask_now`, `mark_only` |
 | `crash_found` | The app crashes or shows an ANR | `capture_restart_continue` | `capture_restart_continue`, `ask` |
 | `ambiguous_target` | Several elements match the step's target | `pick_and_log` | `pick_and_log` (most plausible visible one, logged), `ask` |
-| `state_reset` | A rerun needs a clean state | `run_reset_hook` | `run_reset_hook`, `ask`. Clearing app data on a personal phone still asks |
+| `state_reset` | Before the session and each rerun (repro attempt, test case, retested issue) | `profile_strategy` | `profile_strategy` (the profile's `reset.strategy`), `restart`, `ask`. Clearing app data on a personal device still asks, once per session |
 | `time_box_end` | The time box runs out | `wrap_up` | `wrap_up`, `ask` (offer to extend) |
 | `show_taps_emulator` | Recording on an emulator | `ask` | `ask`, `on`. On physical devices "Show taps" always asks |
 | `report_build` | End of session | `build_and_open` | `build_and_open`, `ask` |
@@ -47,10 +47,11 @@ auto_mode:
     unconfirmed_repro: queue_manual_request
     crash_found: capture_restart_continue
     ambiguous_target: pick_and_log
-    state_reset: run_reset_hook
+    state_reset: profile_strategy
     time_box_end: wrap_up
     show_taps_emulator: ask
     report_build: build_and_open
 ```
 
 A key missing from the config falls back to `ask`.
+Older configs may say `state_reset: run_reset_hook`: treat it as `profile_strategy` (a profile with a reset hook has `reset.strategy: hook`).

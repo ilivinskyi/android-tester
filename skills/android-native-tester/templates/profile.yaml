@@ -24,11 +24,29 @@ login:
   # secrets: credentials in secrets.local.yaml (gitignored, filled in by the user)
   # hook:    hooks/login.py logs in using secrets.local.yaml
 
+# How to get back to a known start state: before the session, before every reproduction attempt,
+# before each test case and before each known issue in a retest.
+reset:
+  strategy: restart           # restart | clear-data | hook | none
+  # restart:    `adt app reset --level restart`: force-stop and relaunch; data, login and settings stay
+  # clear-data: `adt app reset --level clear-data`: like a fresh install (onboarding, login and permission
+  #             prompts again); on a personal device it asks first, once per session
+  # hook:       hooks.reset removes what tests leave behind (e.g. empties a list) and keeps the login
+  # none:       never reset; the tester prepares the state by hand
+  after: []                   # what to do after a reset, in plain words, e.g. ["skip the intro screens"]
+                              # login runs again after clear-data, as `login` says
+
 hooks:                        # scripts in hooks/, run by name with `adt hook <name> --package <package>`
   setup: ""                   # before the session, e.g. "setup"
-  reset: ""                   # between reproduction attempts, e.g. "reset"
+  reset: ""                   # used when reset.strategy is hook, e.g. "reset"
   teardown: ""                # after the session
 
 checks: []                    # scripts in checks/, e.g. ["logcat-errors"], run at wrap-up
 
 risky_areas: []               # e.g. [account settings, data deletion]: extra caution and guardrails
+
+# Problems noticed outside the session's charter (another screen, an unrelated feature).
+outside_scope:
+  report: true                # true: listed in their own report section, not counted as bugs; false: ignored
+  not_ready: []               # screens or features still being built: never reported, even when broken
+                              # e.g. ["Settings > Beta features", "new onboarding flow"]
