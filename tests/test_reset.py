@@ -88,3 +88,10 @@ def test_reset_is_listed_once_in_the_sessions_fast_steps(tmp_path, monkeypatch):
     data = json.loads((run / "session.json").read_text(encoding="utf-8"))
     assert data["setup_steps_fast"] == ["reset (clear-data)"]
     assert state.device_dir("fake-serial").is_relative_to(tmp_path)
+
+
+def test_permission_dialog_over_a_fresh_app_counts_as_up():
+    adb = FakeAdb(["com.google.android.apps.nexuslauncher", "com.google.android.permissioncontroller"])
+    _, foreground = device.app_reset(adb, PKG, "clear-data")
+    assert foreground == "com.google.android.permissioncontroller"
+    assert not device.reset_ready("", PKG)  # foreground couldn't be read: keep waiting

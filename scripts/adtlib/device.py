@@ -339,7 +339,8 @@ def reset_ready(foreground: str, package: str) -> bool:
 
     After clear-data the app is like a fresh install, so a system permission dialog may sit on top of it.
     """
-    # TODO(human)
+    # The dialog only appears once the app runs and asks; answering it is part of the setup, not a failure.
+    return foreground == package or foreground in PERMISSION_UI
 
 
 def app_reset(adb: Adb, package: str, level: str, timeout: float = 20.0) -> tuple[list[str], str]:
