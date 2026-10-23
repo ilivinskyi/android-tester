@@ -1,0 +1,31 @@
+# android-native-tester project configuration.
+# Written by onboarding; safe to edit by hand. Lives in <project>/.android-tester/config.yaml.
+version: 1
+
+tester:
+  name: ""
+  team: ""
+
+reports:
+  dir: reports
+  language: en
+  default_time_box_min: 30
+
+jira:
+  project_key: ""           # e.g. PROJ
+  base_url: ""              # e.g. https://yourcompany.atlassian.net
+  # Bug drafts are written as Markdown. Issues are created only after explicit approval, one by one.
+
+severity_notes: ""          # team additions to the standard severity scale, if any
+
+devices:
+  - serial: ""
+    name: ""                # e.g. "Test phone 1"
+    kind: physical          # physical | emulator
+    personal: true          # stricter guardrails: no system settings, data clearing or installs without asking
+    navigation: gesture     # from `adt info`
+    keyboard: gboard
+
+auto_mode:
+  enabled: false
+  decisions: {}             # see auto-mode.md; a missing key means "ask"

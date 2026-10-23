@@ -1,0 +1,82 @@
+"""Regressions found while exploring the Jumbo app (dumps taken from a Pixel 7a, Android 17)."""
+
+from adtlib import guard, hierarchy
+
+DISPLAY = (1080, 2400)
+
+
+def _snap(fixture_xml, name):
+    return hierarchy.parse(fixture_xml(name), display=DISPLAY)
+
+
+def test_screen_reader_only_text_is_kept(fixture_xml):
+    # Prices are rendered as 6x8 px TextViews for TalkBack; the visible digits are drawn separately.
+    snap = _snap(fixture_xml, "jumbo_search_results.xml")
+    price = hierarchy.find_by_text(snap, "Prijs: € 1,99")
+    assert price, "price text must be listed"
+    assert price[0].sr_only and "sr-only" in price[0].describe()
+    assert hierarchy.find_by_text(snap, "€ 1,00 per liter")
+
+
+def test_sliver_tap_targets_are_still_dropped(fixture_xml):
+    snap = _snap(fixture_xml, "jumbo_search_results.xml")
+    assert all(e.bounds.width >= 12 and e.bounds.height >= 12 for e in snap.elements if e.interactive)
+
+
+def test_screen_size_comes_from_display_not_dialog_window(fixture_xml):
+    snap = _snap(fixture_xml, "jumbo_permission_dialog.xml")
+    assert (snap.screen.right, snap.screen.bottom) == DISPLAY
+    # Without a display size the dialog window bounds are the best guess.
+    fallback = hierarchy.parse(fixture_xml("jumbo_permission_dialog.xml"))
+    assert (fallback.screen.right, fallback.screen.bottom) != DISPLAY
+
+
+def test_element_at_picks_topmost_not_smallest(fixture_xml):
+    # The hidden "add to list" heart (113x113) lies under the quantity field; the tap reaches the field.
+    snap = _snap(fixture_xml, "jumbo_stepper.xml")
+    hit = hierarchy.element_at(snap, 848, 671)
+    assert hit is not None and hit.editable and hit.label == "1"
+
+
+def test_tap_point_avoids_bottom_navigation(fixture_xml):
+    snap = _snap(fixture_xml, "jumbo_recipes.xml")
+    card = hierarchy.find_by_text(snap, "Traybake met pompoen en spruitjes")[0]
+    nav = hierarchy.find_by_text(snap, "Recepten")
+    nav_top = min(e.bounds.top for e in snap.elements if e.label == "Start")
+    assert card.bounds.center[1] > nav_top, "fixture premise: the card's center is under the tab bar"
+    point = hierarchy.visible_point(snap, card)
+    assert point is not None
+    x, y = point
+    assert card.bounds.contains(x, y) and y < nav_top
+    assert hierarchy.element_at(snap, x, y) is card
+    assert nav  # sanity: tab bar is in the dump
+
+
+def test_fully_covered_element_has_no_tap_point(fixture_xml):
+    snap = _snap(fixture_xml, "jumbo_stepper.xml")
+    heart = hierarchy.find_by_text(snap, "Toevoegen aan lijstje Jumbo Halfvolle Melk 2 L")[0]
+    assert hierarchy.visible_point(snap, heart) is None
+
+
+def test_text_match_prefers_own_label_of_clickable(fixture_xml):
+    snap = _snap(fixture_xml, "jumbo_custom_tab.xml")
+    matches = hierarchy.find_by_text(snap, "Close tab")
+    assert [m.short_id for m in matches] == ["close_button"]
+
+
+def test_text_match_prefers_label_starting_with_query(fixture_xml):
+    snap = _snap(fixture_xml, "jumbo_search_with_basket.xml")
+    matches = hierarchy.find_by_text(snap, "Mandje")
+    assert [m.label for m in matches] == ["Mandje 1 product"]
+
+
+def test_permission_question_is_not_a_risky_action(fixture_xml):
+    snap = _snap(fixture_xml, "jumbo_permission_dialog.xml")
+    assert not [e.describe() for e in snap.elements if e.risk]
+
+
+def test_action_like():
+    assert guard.action_like("Send feedback about time")
+    assert guard.action_like("Buy now")
+    assert not guard.action_like("Allow Jumbo to send you notifications?")
+    assert not guard.action_like("Share your favourite recipes with friends and family this weekend")

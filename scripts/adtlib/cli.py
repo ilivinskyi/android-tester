@@ -1,0 +1,721 @@
+"""Command line interface. Output is plain text meant to be read by an agent; --json where scripts need it.
+
+UI actions go through human.Driver: human-like by default, instant with the global --fast flag
+(setup and reset steps only).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import random
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from datetime import datetime
+from pathlib import Path
+
+from . import apkinfo, capture, device, hierarchy, keyboard, report, session, state
+from .adb import Adb, AdbError, DeviceError, find_adb, list_devices, run_adb
+from .human import Driver, Outcome
+
+EXIT_OK, EXIT_USAGE, EXIT_DEVICE, EXIT_NOT_FOUND, EXIT_BLOCKED, EXIT_DECISION = 0, 2, 3, 4, 5, 6
+
+
+class NotFound(Exception):
+    pass
+
+
+class Blocked(Exception):
+    pass
+
+
+class NeedsDecision(Exception):
+    """The user (or the auto-mode default) has to choose how to continue."""
+
+
+# --- helpers ---------------------------------------------------------------------------------
+
+def _print_observation(obs: device.Observation, as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(obs.to_dict(), ensure_ascii=False))
+        return
+    s = obs.snapshot
+    activity = obs.activity.removeprefix(obs.package) if obs.activity.startswith(obs.package) else obs.activity
+    print(f"screen: {obs.package}/{activity}  fp={obs.fingerprint}  "
+          f"{s.screen.right}x{s.screen.bottom} @{obs.density}dpi rot={s.rotation}")
+    if obs.preview:
+        print(f"preview: {obs.preview}  (scale {obs.scale:.3f}, numbers = element index)")
+        print(f"screenshot: {obs.screenshot}")
+    risky = [e for e in s.elements if e.risk]
+    if risky:
+        print(f"WARNING: {len(risky)} risky element(s) on screen: "
+              + ", ".join(f"[{e.index}] {e.risk}" for e in risky))
+    print(f"elements ({len(s.elements)}):")
+    for el in s.elements:
+        print("  " * min(el.depth // 4, 3) + el.describe())
+
+
+def _driver(adb: Adb, args) -> Driver:
+    return Driver(adb, pace=args.pace, fast=args.fast, verify=not args.no_verify)
+
+
+def _report_outcome(outcome: Outcome) -> None:
+    if warning := outcome.warning():
+        print(warning)
+
+
+def _after(adb: Adb, args, outcome: Outcome | None = None) -> None:
+    if outcome is not None:
+        _report_outcome(outcome)
+    if args.fast or outcome is None or outcome.changed is None:
+        time.sleep(getattr(args, "settle", 0.5))
+    if getattr(args, "observe", False):
+        _print_observation(device.observe(adb, save_dir=_session_shots(adb)), as_json=False)
+
+
+def _session_shots(adb: Adb) -> Path | None:
+    directory = session.run_dir(adb.serial)
+    return directory / "screenshots" if directory else None
+
+
+def _fresh_snapshot(adb: Adb) -> hierarchy.Snapshot:
+    return device.snapshot(adb)[0]
+
+
+def _tap_point(snap: hierarchy.Snapshot, el: hierarchy.Element, args) -> tuple[int, int]:
+    if hierarchy.visible_point(snap, el) is None:
+        raise NotFound(f"{el.describe()} is covered by other controls (e.g. a toolbar or tab bar). "
+                       "Scroll it into view, or tap the control that covers it.")
+    if args.fast:
+        return hierarchy.visible_point(snap, el)
+    return hierarchy.human_point(snap, el, random.Random())
+
+
+def _unique(matches: list[hierarchy.Element], what: str) -> hierarchy.Element:
+    if not matches:
+        raise NotFound(f"no element matches {what}")
+    if len(matches) > 1:
+        listing = "\n".join("  " + m.describe() for m in matches[:10])
+        raise NotFound(f"{len(matches)} elements match {what}, use --index:\n{listing}")
+    return matches[0]
+
+
+def _matches(snap: hierarchy.Snapshot, args) -> list[hierarchy.Element]:
+    return hierarchy.find_by_text(snap, args.text) if args.text is not None else hierarchy.find_by_id(snap, args.id)
+
+
+def _search(adb: Adb, args, driver: Driver) -> tuple[hierarchy.Snapshot, hierarchy.Element]:
+    """Fresh lookup by text/id; with --scroll, scroll the main list down until found or it stops moving."""
+    what = f"text '{args.text}'" if args.text is not None else f"id '{args.id}'"
+    snap = _fresh_snapshot(adb)
+    for _ in range(args.scroll):
+        if _matches(snap, args):
+            break
+        scrollables = [e for e in snap.elements if e.scrollable]
+        if not scrollables:
+            break
+        driver.scroll("down", max(scrollables, key=lambda e: e.bounds.area).bounds)
+        before, snap = snap, _fresh_snapshot(adb)
+        if [e.label for e in snap.elements] == [e.label for e in before.elements]:
+            break  # reached the end of the list
+    return snap, _unique(_matches(snap, args), what)
+
+
+def _resolve_target(adb: Adb, args, driver: Driver) -> tuple[int, int, hierarchy.Element | None]:
+    if args.index is not None:
+        snap, _ = device.last_snapshot(adb.serial)
+        el = snap.find(args.index)
+        return (*_tap_point(snap, el, args), el)
+    if args.text is not None or args.id is not None:
+        snap, el = _search(adb, args, driver)
+        return (*_tap_point(snap, el, args), el)
+    if args.xy:
+        x, y = args.xy
+    else:
+        _, data = device.last_snapshot(adb.serial)
+        scale = data.get("preview_scale") or 1.0
+        x, y = round(args.preview_xy[0] / scale), round(args.preview_xy[1] / scale)
+    try:
+        snap, _ = device.last_snapshot(adb.serial)
+        return x, y, hierarchy.element_at(snap, x, y)
+    except LookupError:
+        return x, y, None
+
+
+def _approval_log(adb: Adb, entry: dict) -> None:
+    log = state.device_dir(adb.serial) / "guard_log.jsonl"
+    with log.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"time": datetime.now().isoformat(timespec="seconds"), **entry}) + "\n")
+
+
+def _guard(adb: Adb, el: hierarchy.Element | None, allow_reason: str | None, action: str) -> None:
+    if el is None or not el.risk:
+        return
+    if not allow_reason:
+        raise Blocked(
+            f"BLOCKED: {action} on {el.describe()} looks like a {el.risk} action. "
+            "Stop and ask the user. If they approve, rerun with --allow-risk \"<their approval>\"."
+        )
+    _approval_log(adb, {"action": action, "element": el.describe(), "risk": el.risk, "approval": allow_reason})
+
+
+def _parse_time(value: str) -> float:
+    """Epoch seconds from an epoch number, an ISO timestamp (actions.jsonl) or HH:MM:SS today."""
+    try:
+        return float(value)
+    except ValueError:
+        pass
+    if len(value) <= 8 and value.count(":") in (1, 2):
+        today = datetime.now().strftime("%Y-%m-%d")
+        return datetime.fromisoformat(f"{today}T{value}").timestamp()
+    return datetime.fromisoformat(value).timestamp()
+
+
+# --- commands --------------------------------------------------------------------------------
+
+def cmd_doctor(args) -> int:
+    ok = True
+    try:
+        adb_path = find_adb()
+        version = run_adb(adb_path, "version").splitlines()
+        print(f"adb: {adb_path} ({version[1] if len(version) > 1 else version[0]})")
+    except AdbError as exc:
+        print(f"adb: MISSING - {exc}")
+        return EXIT_DEVICE
+    on_path = shutil.which("adb")
+    if on_path and Path(on_path).resolve() != adb_path.resolve():
+        print(f"note: another adb is first on PATH ({on_path}). Mixed adb versions restart each other's "
+              "server; prefer the SDK one on PATH.")
+    for tool in ("scrcpy", "ffmpeg", "emulator", "uv"):
+        print(f"{tool}: {shutil.which(tool) or 'not on PATH'}")
+    devices = list_devices(adb_path)
+    if not devices:
+        print("devices: none connected")
+        ok = False
+    for d in devices:
+        print(f"device: {d.serial} {d.state} {d.model}")
+        ok &= d.state == "device"
+    return EXIT_OK if ok else EXIT_DEVICE
+
+
+def cmd_devices(args) -> int:
+    devices = list_devices(find_adb())
+    if args.json:
+        print(json.dumps([d.__dict__ for d in devices]))
+    for d in devices if not args.json else []:
+        kind = "emulator" if d.is_emulator else "physical"
+        print(f"{d.serial}\t{d.state}\t{kind}\t{d.model}")
+    return EXIT_OK if devices else EXIT_DEVICE
+
+
+def cmd_info(args, adb: Adb) -> int:
+    props = device.device_props(adb)
+    print(json.dumps(props) if args.json else "\n".join(f"{k}: {v}" for k, v in props.items()))
+    return EXIT_OK
+
+
+def cmd_observe(args, adb: Adb) -> int:
+    save_dir = Path(args.save_dir) if args.save_dir else (_session_shots(adb) if args.name else None)
+    if args.image_only:
+        target = (save_dir or state.device_dir(adb.serial)) / f"{args.name or 'latest'}.png"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(device.screenshot(adb))
+        print(f"screenshot: {target}  (no hierarchy dump: accessibility layer untouched)")
+        return EXIT_OK
+    obs = device.observe(adb, save_dir=save_dir, name=args.name, with_image=not args.no_image,
+                         marks=not args.no_marks)
+    _print_observation(obs, args.json)
+    return EXIT_OK
+
+
+def cmd_tap(args, adb: Adb) -> int:
+    driver = _driver(adb, args)
+    x, y, el = _resolve_target(adb, args, driver)
+    action = "long-press" if args.long else "tap"
+    _guard(adb, el, args.allow_risk, action)
+    if el is not None and not el.enabled:
+        print(f"note: target is disabled: {el.describe()}")
+    outcome = driver.tap(x, y, target=el.describe() if el else "", long=args.long)
+    print(f"{action} ({x},{y})" + (f" -> {el.describe()}" if el else ""))
+    _after(adb, args, outcome)
+    return EXIT_OK
+
+
+def _check_typed(adb: Adb, expected: str) -> None:
+    """Keyboards autocorrect and auto-capitalise, like for a real user. Report it, don't hide it."""
+    focused = [e for e in _fresh_snapshot(adb).elements if e.editable and e.focused]
+    if len(focused) != 1 or focused[0].password:
+        return
+    shown = focused[0].text
+    if shown and shown != expected and shown != focused[0].hint:
+        print(f"note: the field now shows {len(shown)} chars that differ from what was typed "
+              "(autocorrect or auto-capitalisation?). Observe to check.")
+
+
+def cmd_type(args, adb: Adb) -> int:
+    driver = _driver(adb, args)
+    if args.index is not None:
+        snap, _ = device.last_snapshot(adb.serial)
+        el = snap.find(args.index)
+        driver.tap(*_tap_point(snap, el, args), target=el.describe())
+    try:
+        outcome = driver.type_text(args.text, fallback=args.fallback, submit=args.submit)
+    except keyboard.CannotType as exc:
+        raise NeedsDecision(f"{exc}. Ask the user how to continue, or rerun with --fallback keyevents "
+                            "(one key event per character) or --fallback bulk.") from exc
+    except keyboard.NoKeyboard as exc:
+        raise NeedsDecision(f"{exc}, or rerun with --fallback keyevents.") from exc
+    # Never echo the text: it may be a credential from the secrets file.
+    print(f"typed {len(args.text)} chars" + (" + submit" if args.submit else ""))
+    if not args.no_verify and not args.submit:
+        _check_typed(adb, args.text)
+    _after(adb, args, outcome)
+    return EXIT_OK
+
+
+def cmd_key(args, adb: Adb) -> int:
+    driver = _driver(adb, args)
+    outcome = None
+    for _ in range(args.repeat):
+        outcome = driver.key(args.name)
+    print(f"key {args.name} x{args.repeat}")
+    _after(adb, args, outcome)
+    return EXIT_OK
+
+
+def cmd_swipe(args, adb: Adb) -> int:
+    outcome = _driver(adb, args).swipe(*args.coords, ms=args.ms)
+    print(f"swipe {args.coords}")
+    _after(adb, args, outcome)
+    return EXIT_OK
+
+
+def cmd_scroll(args, adb: Adb) -> int:
+    snap, _ = device.last_snapshot(adb.serial)
+    if args.index is not None:
+        area = snap.find(args.index).bounds
+    else:
+        scrollables = [e for e in snap.elements if e.scrollable]
+        area = max(scrollables, key=lambda e: e.bounds.area).bounds if scrollables else snap.screen
+    outcome = _driver(adb, args).scroll(args.direction, area)
+    print(f"scroll {args.direction} in {area}")
+    _after(adb, args, outcome)
+    return EXIT_OK
+
+
+def cmd_wait(args, adb: Adb) -> int:
+    deadline = time.monotonic() + args.timeout
+    what = f"text '{args.text}'" if args.text else f"id '{args.id}'"
+    while True:
+        try:
+            snap = _fresh_snapshot(adb)
+        except AdbError:
+            snap = None
+        if snap is not None:
+            found = hierarchy.find_by_text(snap, args.text) if args.text else hierarchy.find_by_id(snap, args.id)
+            if bool(found) != args.gone:
+                print(f"{'gone' if args.gone else 'found'}: {what}")
+                return EXIT_OK
+        if time.monotonic() > deadline:
+            print(f"timeout after {args.timeout}s waiting for {what} to {'disappear' if args.gone else 'appear'}")
+            return EXIT_NOT_FOUND
+        time.sleep(0.5)
+
+
+def cmd_app(args, adb: Adb) -> int:
+    match args.app_cmd:
+        case "launch":
+            device.app_launch(adb, args.package)
+            session.log_action(adb.serial, {"action": "app-launch", "mode": "intent", "package": args.package})
+            print(f"launched {args.package} (launcher intent)")
+            _after(adb, args)
+        case "stop":
+            device.app_stop(adb, args.package)
+            session.log_action(adb.serial, {"action": "app-stop", "mode": "setup", "package": args.package})
+            print(f"stopped {args.package}")
+        case "clear":
+            device.app_clear(adb, args.package)
+            session.log_action(adb.serial, {"action": "app-clear", "mode": "setup", "package": args.package})
+            print(f"cleared data of {args.package}")
+        case "install":
+            path = Path(args.apk)
+            if path.suffix.lower() in (".xapk", ".apks"):
+                with tempfile.TemporaryDirectory() as tmp:
+                    parts = apkinfo.extract_bundle(path, Path(tmp))
+                    out = adb.run("install-multiple", "-r", "-g", *map(str, parts), timeout=600)
+                    print(out.decode(errors="replace").strip() + f" ({len(parts)} split APKs)")
+            else:
+                print(device.app_install(adb, path))
+            session.log_action(adb.serial, {"action": "app-install", "mode": "setup", "file": path.name})
+        case "list":
+            print("\n".join(p for p in device.app_list(adb, not args.all) if args.filter in p))
+        case "info":
+            print(json.dumps(device.app_info(adb, args.package), indent=1))
+        case "current":
+            package, activity = device.foreground_activity(adb)
+            print(f"{package} {activity}")
+    return EXIT_OK
+
+
+def cmd_logcat(args, adb: Adb) -> int:
+    match args.log_cmd:
+        case "start":
+            pid = capture.logcat_start(adb, Path(args.out), clear=not args.keep)
+            print(f"logcat -> {Path(args.out).resolve()} (pid {pid})")
+        case "stop":
+            path = capture.logcat_stop(adb)
+            print(f"logcat stopped: {path}" if path else "logcat was not running")
+        case "crashes":
+            text = capture.crashes(adb, args.package)
+            print(text or "no crashes or ANRs")
+    return EXIT_OK
+
+
+def cmd_record(args, adb: Adb) -> int:
+    match args.rec_cmd:
+        case "start":
+            pid = capture.record_start(adb, Path(args.out))
+            print(f"recording -> {Path(args.out).resolve()} (worker pid {pid})")
+        case "stop":
+            path = capture.record_stop(adb, discard=args.discard)
+            print("recording discarded" if args.discard else f"recording saved: {path}" if path
+                  else "no recording was running")
+    return EXIT_OK
+
+
+def cmd_record_worker(args, adb: Adb) -> int:
+    capture.record_worker(adb, Path(args.stop_flag))
+    return EXIT_OK
+
+
+def cmd_clip(args, adb: Adb) -> int:
+    video = Path(args.video) if args.video else (session.run_dir(adb.serial) or Path(".")) / "videos" / "session.mp4"
+    start, end = capture.cut_clip(video, _parse_time(args.start), _parse_time(args.end), Path(args.out), args.pad)
+    print(f"clip {Path(args.out).resolve()} = {video.name} {start:.1f}-{end:.1f}s")
+    return EXIT_OK
+
+
+def cmd_session(args, adb: Adb) -> int:
+    match args.session_cmd:
+        case "start":
+            props = device.device_props(adb)
+            meta = {
+                "mode": args.mode, "charter": args.charter, "ticket": args.ticket, "package": args.package,
+                "device": props, "input": "adt human mode" + (f" (pace {args.pace})" if args.pace != "human" else ""),
+            }
+            if args.package:
+                try:
+                    meta["app"] = device.app_info(adb, args.package)
+                except AdbError:
+                    meta["app"] = {"package": args.package, "installed": False}
+            directory = session.start(adb.serial, Path(args.dir), meta)
+            started = []
+            if args.logcat:
+                capture.logcat_start(adb, directory / "logs" / "logcat.txt")
+                started.append("logcat")
+            if args.record:
+                capture.record_start(adb, directory / "videos" / "session.mp4")
+                started.append("recording")
+            active = session.active(adb.serial)
+            active["started_capture"] = started
+            state.write_json(state.device_dir(adb.serial) / "session.json", active)
+            print(f"session -> {directory}" + (f" ({', '.join(started)} running)" if started else ""))
+        case "end":
+            active = session.active(adb.serial)
+            if not active:
+                print("no active session")
+                return EXIT_OK
+            started = active.get("started_capture", [])
+            if "recording" in started:
+                print(f"recording: {capture.record_stop(adb, discard=args.discard_video)}")
+            if "logcat" in started:
+                print(f"logcat: {capture.logcat_stop(adb)}")
+            print(f"session ended: {session.end(adb.serial)}")
+        case "status":
+            active = session.active(adb.serial)
+            print(json.dumps(active, indent=1) if active else "no active session")
+    return EXIT_OK
+
+
+def cmd_touches(args, adb: Adb) -> int:
+    """'Show taps' (Developer options) draws touch markers into recordings. It's a system setting."""
+    physical = not (adb.serial.startswith("emulator-") or adb.getprop("ro.kernel.qemu") == "1")
+    if args.state == "on" and physical and not args.approval:
+        raise Blocked("BLOCKED: 'Show taps' changes a system setting on a physical device. Ask the user; "
+                      "if they approve, rerun with --approval \"<their approval>\" and turn it off afterwards.")
+    if args.approval:
+        _approval_log(adb, {"action": f"show_touches {args.state}", "approval": args.approval})
+    adb.shell("settings", "put", "system", "show_touches", "1" if args.state == "on" else "0")
+    print(f"show taps: {args.state}")
+    return EXIT_OK
+
+
+def cmd_script(args, adb: Adb) -> int:
+    """Run an app-profile script: .android-tester/apps/<package>/<hooks|checks>/<name>.(py|sh|ps1)."""
+    kind = "hooks" if args.cmd == "hook" else "checks"
+    app_dir = Path(args.config_dir).resolve() / "apps" / args.package
+    candidates = [app_dir / kind / f"{args.name}{ext}" for ext in (".py", ".sh", ".ps1")]
+    script = next((c for c in candidates if c.is_file()), None)
+    if script is None:
+        raise NotFound(f"no {kind[:-1]} '{args.name}' in {app_dir / kind}")
+    adt_entry = Path(__file__).resolve().parent.parent / "adt.py"
+    env = {
+        **os.environ, "ANDROID_SERIAL": adb.serial, "ADB": str(adb.path), "ADT_PACKAGE": args.package,
+        "ADT_APP_DIR": str(app_dir), "ADT_RUN_DIR": str(session.run_dir(adb.serial) or ""),
+        # Shell scripts use $ADT; Python hooks call [ADT_PYTHON, ADT_SCRIPT, ...] to avoid quoting issues.
+        "ADT": f'"{sys.executable}" "{adt_entry}"', "ADT_PYTHON": sys.executable, "ADT_SCRIPT": str(adt_entry),
+    }
+    secrets = app_dir / "secrets.local.yaml"
+    if secrets.is_file():
+        env["ADT_SECRETS"] = str(secrets)
+    if script.suffix == ".py":
+        uv = shutil.which("uv")
+        cmd = [uv, "run", "-q", "--script", str(script)] if uv else [sys.executable, str(script)]
+    elif script.suffix == ".sh":
+        cmd = ["bash", str(script)]
+    else:
+        cmd = ["pwsh", "-NoProfile", "-File", str(script)]
+    session.log_action(adb.serial, {"action": f"{kind[:-1]}-{args.name}", "mode": "setup", "script": script.name})
+    return subprocess.run([*cmd, *args.script_args], env=env).returncode
+
+
+def cmd_apk(args) -> int:
+    result = apkinfo.inspect(Path(args.file))
+    print(json.dumps(result, indent=1) if args.json else apkinfo.to_text(result))
+    return EXIT_OK if result["same_signer_for_all"] else EXIT_BLOCKED
+
+
+def cmd_report(args) -> int:
+    run = Path(args.dir)
+    problems = report.check(run)
+    if args.report_cmd == "check" or problems:
+        for p in problems:
+            print(f"problem: {p}")
+        if problems:
+            return EXIT_USAGE
+        print("report data ok")
+        if args.report_cmd == "check":
+            return EXIT_OK
+    for path in report.build(run):
+        print(f"wrote {path}")
+    return EXIT_OK
+
+
+# --- parser ----------------------------------------------------------------------------------
+
+def _add_settle(p: argparse.ArgumentParser, observe: bool = True) -> None:
+    p.add_argument("--settle", type=float, default=0.5,
+                   help="seconds to wait after the action when the screen isn't checked (fast mode)")
+    if observe:
+        p.add_argument("--observe", action="store_true", help="observe right after the action")
+
+
+def _global_flags(parser: argparse.ArgumentParser, suppress: bool) -> None:
+    # On subcommands the defaults are suppressed, so `adt tap --fast` and `adt --fast tap` both work
+    # without the subcommand resetting a flag given before it.
+    def default(value):
+        return argparse.SUPPRESS if suppress else value
+
+    parser.add_argument("-s", "--serial", default=default(None),
+                        help="device serial (default: ANDROID_SERIAL or the only device)")
+    parser.add_argument("--fast", action="store_true", default=default(False),
+                        help="instant adb input, no pacing: ONLY for setup/reset steps, never for the test itself")
+    parser.add_argument("--pace", choices=["human", "slow"], default=default(os.environ.get("ADT_PACE", "human")))
+    parser.add_argument("--no-verify", action="store_true", default=default(False),
+                        help="skip the did-the-screen-change check")
+
+
+def _subparsers(parser: argparse.ArgumentParser, common: argparse.ArgumentParser, **kwargs):
+    group = parser.add_subparsers(**kwargs)
+    add = group.add_parser
+
+    def add_with_globals(name, **kw):
+        return add(name, parents=[common], **kw)
+
+    group.add_parser = add_with_globals
+    return group
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="adt", description="Android device tool for agent-driven testing")
+    _global_flags(parser, suppress=False)
+    common = argparse.ArgumentParser(add_help=False)
+    _global_flags(common, suppress=True)
+    sub = _subparsers(parser, common, dest="cmd", required=True)
+
+    sub.add_parser("doctor", help="check adb, tools and connected devices")
+    p = sub.add_parser("devices", help="list devices")
+    p.add_argument("--json", action="store_true")
+    p = sub.add_parser("info", help="device facts for reports (navigation mode, keyboard, locale, ...)")
+    p.add_argument("--json", action="store_true")
+
+    p = sub.add_parser("observe", help="dump UI hierarchy + screenshot with numbered elements")
+    p.add_argument("--save-dir", help="also copy xml/png/preview into this directory (evidence)")
+    p.add_argument("--name", help="file name stem (saved into the session's screenshots/ when a session is active)")
+    p.add_argument("--no-image", action="store_true", help="hierarchy only, skip the screenshot")
+    p.add_argument("--no-marks", action="store_true", help="preview without numbered boxes")
+    p.add_argument("--image-only", action="store_true",
+                   help="screenshot only, no hierarchy dump (keeps the accessibility layer off; for repro runs)")
+    p.add_argument("--json", action="store_true")
+
+    p = sub.add_parser("tap", help="tap an element or point")
+    target = p.add_mutually_exclusive_group(required=True)
+    target.add_argument("--index", type=int, help="element index from the last observe")
+    target.add_argument("--text", help="visible text / content description (fresh lookup)")
+    target.add_argument("--id", help="resource id, full or short (fresh lookup)")
+    target.add_argument("--xy", type=int, nargs=2, metavar=("X", "Y"), help="device pixels")
+    target.add_argument("--preview-xy", type=int, nargs=2, metavar=("X", "Y"), help="pixels in the preview image")
+    p.add_argument("--scroll", type=int, nargs="?", const=8, default=0, metavar="MAX",
+                   help="with --text/--id: scroll down up to MAX times (default 8) to find the target")
+    p.add_argument("--long", action="store_true", help="long-press instead of tap")
+    p.add_argument("--allow-risk", metavar="APPROVAL", help="user's approval for a guarded element")
+    _add_settle(p)
+
+    p = sub.add_parser("type", help="type text through the on-screen keyboard")
+    p.add_argument("text")
+    p.add_argument("--index", type=int, help="tap this element first to focus it")
+    p.add_argument("--submit", action="store_true", help="press the keyboard's action key afterwards")
+    p.add_argument("--fallback", choices=["ask", "keyevents", "bulk"], default="ask",
+                   help="when keys can't be located: stop and ask (exit 6), key events per char, or bulk input")
+    _add_settle(p)
+
+    p = sub.add_parser("key", help="back / home (gesture or nav-bar per device), enter, delete, tab, or KEYCODE_*")
+    p.add_argument("name")
+    p.add_argument("--repeat", type=int, default=1)
+    _add_settle(p)
+
+    p = sub.add_parser("swipe", help="swipe between two device points")
+    p.add_argument("coords", type=int, nargs=4, metavar=("X1", "Y1", "X2", "Y2"))
+    p.add_argument("--ms", type=int, help="duration (default: human range, or 300 in fast mode)")
+    _add_settle(p)
+
+    p = sub.add_parser("scroll", help="scroll content (down = reveal content below)")
+    p.add_argument("direction", choices=["up", "down", "left", "right"])
+    p.add_argument("--index", type=int, help="scroll inside this element (default: largest scrollable)")
+    _add_settle(p)
+
+    p = sub.add_parser("wait", help="wait until an element appears (or disappears with --gone)")
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--text")
+    g.add_argument("--id")
+    p.add_argument("--gone", action="store_true")
+    p.add_argument("--timeout", type=float, default=10)
+
+    p = sub.add_parser("app", help="app management (setup operations)")
+    app = _subparsers(p, common, dest="app_cmd", required=True)
+    for name in ("launch", "stop", "clear", "info"):
+        ap = app.add_parser(name)
+        ap.add_argument("package")
+        if name == "launch":
+            _add_settle(ap)
+    ap = app.add_parser("install")
+    ap.add_argument("apk")
+    ap = app.add_parser("list")
+    ap.add_argument("filter", nargs="?", default="")
+    ap.add_argument("--all", action="store_true", help="include system packages")
+    app.add_parser("current")
+
+    p = sub.add_parser("logcat", help="background logcat capture and crash extraction")
+    log = _subparsers(p, common, dest="log_cmd", required=True)
+    lp = log.add_parser("start")
+    lp.add_argument("--out", required=True, help="file to stream logcat into")
+    lp.add_argument("--keep", action="store_true", help="don't clear the device log buffer first")
+    log.add_parser("stop")
+    lp = log.add_parser("crashes")
+    lp.add_argument("--package", help="only crash blocks mentioning this package")
+
+    p = sub.add_parser("record", help="screen recording, chunked past the 3 min screenrecord limit")
+    rec = _subparsers(p, common, dest="rec_cmd", required=True)
+    rp = rec.add_parser("start")
+    rp.add_argument("--out", required=True, help="target .mp4")
+    rp = rec.add_parser("stop")
+    rp.add_argument("--discard", action="store_true", help="delete the video (test passed)")
+
+    p = sub.add_parser("clip", help="cut a clip from a recording by wall-clock time (action log 't' values)")
+    p.add_argument("--from", dest="start", required=True, help="ISO time, HH:MM:SS or epoch")
+    p.add_argument("--to", dest="end", required=True)
+    p.add_argument("--out", required=True)
+    p.add_argument("--video", help="default: the active session's videos/session.mp4")
+    p.add_argument("--pad", type=float, default=3.0, help="seconds added before and after (default 3)")
+
+    p = sub.add_parser("session", help="standard run folder, action log, capture")
+    ses = _subparsers(p, common, dest="session_cmd", required=True)
+    sp = ses.add_parser("start")
+    sp.add_argument("--dir", required=True, help="run folder, e.g. reports/<date>-<app>-explore")
+    sp.add_argument("--package")
+    sp.add_argument("--mode", choices=["explore", "test-case", "repro", "ui-review"])
+    sp.add_argument("--charter")
+    sp.add_argument("--ticket")
+    sp.add_argument("--record", action="store_true", help="record the screen to videos/session.mp4")
+    sp.add_argument("--logcat", action="store_true", help="stream logcat to logs/logcat.txt")
+    sp = ses.add_parser("end")
+    sp.add_argument("--discard-video", action="store_true")
+    ses.add_parser("status")
+
+    p = sub.add_parser("touches", help="'Show taps' markers for recordings (system setting: needs approval on phones)")
+    p.add_argument("state", choices=["on", "off"])
+    p.add_argument("--approval", metavar="APPROVAL", help="user's approval, required to turn it on on a phone")
+
+    for name, kind in (("hook", "hooks"), ("check", "checks")):
+        p = sub.add_parser(name, help=f"run an app-profile script from .android-tester/apps/<package>/{kind}/")
+        p.add_argument("name")
+        p.add_argument("--package", required=True)
+        p.add_argument("--config-dir", default=".android-tester")
+        p.add_argument("script_args", nargs="*", help="arguments for the script, after --")
+
+    p = sub.add_parser("apk", help="inspect APK / .xapk / .apks files (no device needed)")
+    apk = _subparsers(p, common, dest="apk_cmd", required=True)
+    ap = apk.add_parser("inspect", help="package, version, signers per APK, permissions of note")
+    ap.add_argument("file")
+    ap.add_argument("--json", action="store_true")
+
+    p = sub.add_parser("report", help="validate and render the standard report of a run folder")
+    rep = _subparsers(p, common, dest="report_cmd", required=True)
+    for name in ("check", "build"):
+        rp = rep.add_parser(name)
+        rp.add_argument("dir")
+
+    p = sub.add_parser("_record-worker", help=argparse.SUPPRESS)
+    p.add_argument("stop_flag")
+    return parser
+
+
+_NO_DEVICE = {"doctor": cmd_doctor, "devices": cmd_devices, "report": cmd_report, "apk": cmd_apk}
+_WITH_DEVICE = {
+    "info": cmd_info, "observe": cmd_observe, "tap": cmd_tap, "type": cmd_type, "key": cmd_key,
+    "swipe": cmd_swipe, "scroll": cmd_scroll, "wait": cmd_wait, "app": cmd_app, "logcat": cmd_logcat,
+    "record": cmd_record, "clip": cmd_clip, "session": cmd_session, "touches": cmd_touches,
+    "hook": cmd_script, "check": cmd_script, "_record-worker": cmd_record_worker,
+}
+
+
+def main(argv: list[str] | None = None) -> int:
+    # Windows consoles default to a legacy code page; app labels contain arbitrary Unicode.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+    args = build_parser().parse_args(argv)
+    try:
+        if args.cmd in _NO_DEVICE:
+            return _NO_DEVICE[args.cmd](args)
+        adb = Adb(args.serial)
+        return _WITH_DEVICE[args.cmd](args, adb)
+    except Blocked as exc:
+        print(exc, file=sys.stderr)
+        return EXIT_BLOCKED
+    except NeedsDecision as exc:
+        print(f"DECISION NEEDED: {exc}", file=sys.stderr)
+        return EXIT_DECISION
+    except (NotFound, LookupError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_NOT_FOUND
+    except DeviceError as exc:
+        print(f"device error: {exc}", file=sys.stderr)
+        return EXIT_DEVICE
+    except (AdbError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_DEVICE if isinstance(exc, AdbError) else EXIT_USAGE

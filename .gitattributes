@@ -1,0 +1,5 @@
+# Same line endings on every OS: the plugin's scripts run on Windows, macOS and Linux.
+* text=auto eol=lf
+
+# Binary test fixtures (compiled Android manifest).
+*.axml binary

@@ -1,0 +1,223 @@
+"""Background evidence capture: logcat streaming and chunked screen recording."""
+
+from __future__ import annotations
+
+import json
+import re
+import shutil
+import subprocess
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+from . import state
+from .adb import Adb, AdbError, detached_kwargs, is_alive, terminate
+
+# --- logcat ----------------------------------------------------------------------------------
+
+
+def logcat_start(adb: Adb, out_file: Path, clear: bool = True) -> int:
+    proc_file = state.device_dir(adb.serial) / "logcat.json"
+    if (running := state.read_json(proc_file)) and is_alive(running["pid"]):
+        raise AdbError(f"logcat already running (pid {running['pid']}) -> {running['file']}; stop it first")
+    if clear:
+        adb.run("logcat", "-c", check=False)
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    with out_file.open("wb") as fh:
+        proc = adb.popen("logcat", "-v", "threadtime", stdout=fh)
+    state.write_json(proc_file, {"pid": proc.pid, "file": str(out_file.resolve())})
+    return proc.pid
+
+
+def logcat_stop(adb: Adb) -> Path | None:
+    proc_file = state.device_dir(adb.serial) / "logcat.json"
+    running = state.read_json(proc_file)
+    if not running:
+        return None
+    terminate(running["pid"])
+    proc_file.unlink(missing_ok=True)
+    return Path(running["file"])
+
+
+_CRASH_MARKERS = re.compile(r"FATAL EXCEPTION|ANR in |Process: .* PID: |\bSIGSEGV\b|Fatal signal")
+
+
+def crashes(adb: Adb, package: str | None = None) -> str:
+    """Crash buffer plus ANR / fatal lines from the main buffer since the last `logcat -c`."""
+    crash_buf = adb.run("logcat", "-d", "-b", "crash", "-v", "threadtime", check=False).decode(errors="replace")
+    main = adb.run("logcat", "-d", "-v", "threadtime", check=False).decode(errors="replace")
+    anr = [line for line in main.splitlines() if _CRASH_MARKERS.search(line)]
+    text = crash_buf.strip()
+    if anr:
+        text = (text + "\n" if text else "") + "\n".join(anr)
+    if package and text:
+        # Keep blocks that mention the package; crash blocks are separated by `--------- beginning of` lines.
+        relevant = [b for b in re.split(r"(?m)^-{9} beginning of .*$", text) if package in b]
+        text = "\n".join(b.strip() for b in relevant)
+    return text.strip()
+
+
+# --- screen recording ------------------------------------------------------------------------
+
+_REMOTE_REC_DIR = "/sdcard/adt_rec"
+_CHUNK_SECONDS = 180  # screenrecord's hard limit
+
+
+def record_start(adb: Adb, out_file: Path) -> int:
+    rec_file = state.device_dir(adb.serial) / "record.json"
+    if (running := state.read_json(rec_file)) and is_alive(running["pid"]):
+        raise AdbError(f"recording already running (pid {running['pid']}); stop it first")
+    stop_flag = state.device_dir(adb.serial) / "record.stop"
+    stop_flag.unlink(missing_ok=True)
+    _chunk_log(adb).unlink(missing_ok=True)
+    adb.shell("rm", "-rf", _REMOTE_REC_DIR, check=False)
+    adb.shell("mkdir", "-p", _REMOTE_REC_DIR)
+    # The worker is this same CLI in a hidden mode, detached so it survives the current command.
+    entry = Path(__file__).resolve().parent.parent / "adt.py"
+    cmd = [sys.executable, str(entry), "-s", adb.serial, "_record-worker", str(stop_flag)]
+    log = (state.device_dir(adb.serial) / "record_worker.log").open("wb")
+    proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, **detached_kwargs())
+    state.write_json(rec_file, {
+        "pid": proc.pid, "file": str(out_file.resolve()), "stop_flag": str(stop_flag),
+        "started": datetime.now().isoformat(timespec="seconds"),
+    })
+    return proc.pid
+
+
+def _chunk_log(adb: Adb) -> Path:
+    return state.device_dir(adb.serial) / "record_chunks.jsonl"
+
+
+def record_worker(adb: Adb, stop_flag: Path) -> None:
+    chunk = 0
+    while not stop_flag.exists():
+        remote = f"{_REMOTE_REC_DIR}/chunk_{chunk:03d}.mp4"
+        # Wall time of each chunk start: maps action-log times to video positions despite restart gaps.
+        with _chunk_log(adb).open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"name": f"chunk_{chunk:03d}.mp4", "wall": time.time()}) + "\n")
+        # Blocks until the time limit or until record_stop sends SIGINT, which finalizes the mp4.
+        adb.shell("screenrecord", "--time-limit", str(_CHUNK_SECONDS), remote,
+                  check=False, timeout=_CHUNK_SECONDS + 30)
+        chunk += 1
+
+
+def record_stop(adb: Adb, discard: bool = False) -> Path | None:
+    rec_file = state.device_dir(adb.serial) / "record.json"
+    running = state.read_json(rec_file)
+    if not running:
+        return None
+    Path(running["stop_flag"]).touch()
+    adb.shell("pkill", "-INT", "screenrecord", check=False)
+    for _ in range(40):
+        if not is_alive(running["pid"]):
+            break
+        time.sleep(0.25)
+    else:
+        terminate(running["pid"])
+    time.sleep(0.5)  # let the device flush the last mp4 trailer
+    rec_file.unlink(missing_ok=True)
+
+    if discard:
+        adb.shell("rm", "-rf", _REMOTE_REC_DIR, check=False)
+        return None
+
+    out_file = Path(running["file"])
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    listing = adb.shell("ls", _REMOTE_REC_DIR, check=False).split()
+    chunks = sorted(name for name in listing if name.endswith(".mp4"))
+    if not chunks:
+        raise AdbError("recording produced no video (secure content or screenrecord unsupported)")
+    local_chunks = []
+    for name in chunks:
+        local = out_file.with_name(f"{out_file.stem}.{name}")
+        adb.run("pull", f"{_REMOTE_REC_DIR}/{name}", str(local), timeout=120)
+        local_chunks.append(local)
+    adb.shell("rm", "-rf", _REMOTE_REC_DIR, check=False)
+    _write_timeline(adb, local_chunks, out_file)
+    return _join_chunks(local_chunks, out_file)
+
+
+def _duration(path: Path) -> float | None:
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        return None
+    proc = subprocess.run([ffprobe, "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path)],
+                          capture_output=True, text=True)
+    try:
+        return float(proc.stdout.strip())
+    except ValueError:
+        return None
+
+
+def _write_timeline(adb: Adb, chunks: list[Path], out_file: Path) -> None:
+    starts = {}
+    log = _chunk_log(adb)
+    if log.is_file():
+        for line in log.read_text(encoding="utf-8").splitlines():
+            entry = json.loads(line)
+            starts[entry["name"]] = entry["wall"]
+    timeline, video_pos = [], 0.0
+    for chunk in chunks:
+        name = chunk.name.split(".", 1)[1]  # "<stem>.chunk_000.mp4" -> "chunk_000.mp4"
+        duration = _duration(chunk)
+        timeline.append({"wall_start": starts.get(name), "video_start": round(video_pos, 3), "duration": duration})
+        video_pos += duration or 0.0
+    state.write_json(out_file.with_suffix(".timeline.json"), {"chunks": timeline})
+
+
+def video_position(timeline: dict, wall: float) -> float | None:
+    """Seconds into the joined video for a wall-clock time, or None if it falls outside the recording."""
+    for chunk in timeline["chunks"]:
+        start, duration = chunk["wall_start"], chunk["duration"]
+        if start is None or duration is None:
+            return None
+        if start <= wall <= start + duration:
+            return chunk["video_start"] + (wall - start)
+    return None
+
+
+def cut_clip(video: Path, wall_from: float, wall_to: float, out: Path, pad: float = 3.0) -> tuple[float, float]:
+    """Cut [wall_from - pad, wall_to + pad] from a recording made by record_start, re-encoded at 540p."""
+    timeline = state.read_json(video.with_suffix(".timeline.json"))
+    if not timeline:
+        raise AdbError(f"no timeline next to {video}; record it with `adt record`")
+    starts = [video_position(timeline, wall_from - pad), video_position(timeline, wall_from)]
+    ends = [video_position(timeline, wall_to + pad), video_position(timeline, wall_to)]
+    start = next((s for s in starts if s is not None), None)
+    end = next((e for e in ends if e is not None), None)
+    if start is None or end is None or end <= start:
+        raise AdbError("the requested time range is not inside the recording")
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise AdbError("ffmpeg is required to cut clips")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.run([ffmpeg, "-y", "-loglevel", "error", "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}",
+                           "-i", str(video), "-vf", "scale=540:-2", "-c:v", "libx264", "-crf", "26",
+                           "-preset", "veryfast", "-an", str(out)], capture_output=True)
+    if proc.returncode != 0:
+        raise AdbError(f"ffmpeg failed: {proc.stderr.decode(errors='replace')}")
+    return start, end
+
+
+def _join_chunks(chunks: list[Path], out_file: Path) -> Path:
+    if len(chunks) == 1:
+        chunks[0].replace(out_file)
+        return out_file
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        # Keep the parts; the report can still link them in order.
+        return chunks[0]
+    listing = out_file.with_suffix(".txt")
+    listing.write_text("".join(f"file '{c.resolve().as_posix()}'\n" for c in chunks), encoding="utf-8")
+    proc = subprocess.run(
+        [ffmpeg, "-y", "-loglevel", "error", "-f", "concat", "-safe", "0", "-i", str(listing), "-c", "copy",
+         str(out_file)],
+        capture_output=True,
+    )
+    listing.unlink(missing_ok=True)
+    if proc.returncode != 0:
+        raise AdbError(f"ffmpeg concat failed: {proc.stderr.decode(errors='replace')}")
+    for c in chunks:
+        c.unlink(missing_ok=True)
+    return out_file

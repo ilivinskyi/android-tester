@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Device state and evidence produced by the skills
+.adt/
+reports/
+
+# Per-app test credentials
+*.local.yaml
+*.local.yml
+.env

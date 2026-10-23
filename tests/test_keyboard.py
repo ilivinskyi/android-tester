@@ -1,0 +1,91 @@
+"""Typing via Gboard, using real multi-window dumps of its three layers (Pixel 7a, English US)."""
+
+import pytest
+
+from adtlib import keyboard
+
+IME = "com.google.android.inputmethod.latin"
+LAYERS = {"letters": "gboard_letters.xml", "symbols": "gboard_symbols.xml", "more": "gboard_more_symbols.xml"}
+# What the layer-switch keys do on the real keyboard.
+SWITCHES = {"Symbol keyboard": "symbols", "More symbols": "more", "Symbols": "symbols", "Letter keyboard": "letters"}
+
+
+class FakeGboard:
+    def __init__(self, fixture_xml):
+        self.xml = {name: fixture_xml(f) for name, f in LAYERS.items()}
+        self.layer = "letters"
+        self.pressed: list[str] = []
+        self.dumps = 0
+
+    def dump(self) -> str:
+        self.dumps += 1
+        return self.xml[self.layer]
+
+    def press(self, key: keyboard.Key) -> None:
+        self.pressed.append(key.name)
+        self.layer = SWITCHES.get(key.name, self.layer)
+
+
+def test_parse_letters_layer(fixture_xml):
+    layer = keyboard.parse_layer(fixture_xml("gboard_letters.xml"), IME)
+    assert layer.kind == "letters" and layer.title == "English (US) (QWERTY)"
+    assert {"q", "a", "z", " ", "."} <= layer.chars.keys()
+    assert {"shift", "delete", "to_symbols", "action"} <= layer.specials.keys()
+
+
+def test_parse_symbol_layers_by_spoken_names(fixture_xml):
+    symbols = keyboard.parse_layer(fixture_xml("gboard_symbols.xml"), IME)
+    assert symbols.kind == "symbols" and {"1", "@", "#", "$", "(", "?"} <= symbols.chars.keys()
+    assert symbols.specials["page"].name == "More symbols"
+    more = keyboard.parse_layer(fixture_xml("gboard_more_symbols.xml"), IME)
+    assert more.kind == "more" and {"~", "=", "{", "%", "<"} <= more.chars.keys()
+
+
+def test_types_letters_digits_and_symbols(fixture_xml):
+    gb = FakeGboard(fixture_xml)
+    keyboard.Typist(gb.dump, gb.press, IME).type("Hi 7$~")
+    assert gb.pressed == [
+        "Shift", "h", "i", "Space",
+        "Symbol keyboard", "7", "Dollar sign",
+        "More symbols", "Tilde",
+    ]
+
+
+def test_returns_to_letters(fixture_xml):
+    gb = FakeGboard(fixture_xml)
+    keyboard.Typist(gb.dump, gb.press, IME).type("1a")
+    assert gb.pressed == ["Symbol keyboard", "1", "Letter keyboard", "a"]
+
+
+def test_layouts_are_cached_to_keep_typing_fast(fixture_xml):
+    # A dump of the keyboard window takes ~2.4 s on a Pixel 7a; a person types a word in about one second.
+    gb = FakeGboard(fixture_xml)
+    keyboard.Typist(gb.dump, gb.press, IME).type("Wi-Fi 5G")
+    assert gb.pressed == ["Shift", "w", "i", "Symbol keyboard", "Dash", "Letter keyboard", "Shift", "f", "i",
+                          "Space", "Symbol keyboard", "5", "Letter keyboard", "Shift", "g"]
+    assert gb.dumps == 2  # initial layer + first visit of the symbols layer
+
+
+def test_rereads_after_sentence_end_for_auto_capitalisation(fixture_xml):
+    gb = FakeGboard(fixture_xml)
+    keyboard.Typist(gb.dump, gb.press, IME).type("ok. go")
+    assert gb.dumps == 2
+
+
+def test_shift_enabled_label_is_still_shift(fixture_xml):
+    shifted = fixture_xml("gboard_letters.xml").replace('content-desc="Shift"', 'content-desc="Shift enabled"')
+    layer = keyboard.parse_layer(shifted, IME)
+    assert layer.specials["shift"].name == "Shift enabled" and "page" not in layer.specials
+
+
+def test_untypable_chars_fail_before_typing(fixture_xml):
+    gb = FakeGboard(fixture_xml)
+    with pytest.raises(keyboard.CannotType) as exc:
+        keyboard.Typist(gb.dump, gb.press, IME).type("Привіт")
+    assert exc.value.typed == 0 and gb.pressed == []
+
+
+def test_no_keyboard_visible(fixture_xml):
+    xml = fixture_xml("jumbo_search_results.xml")
+    with pytest.raises(keyboard.NoKeyboard):
+        keyboard.Typist(lambda: xml, lambda k: None, IME).type("a")
