@@ -26,15 +26,19 @@ def _font(size: int) -> ImageFont.ImageFont:
     return ImageFont.load_default(size)
 
 
-def make_preview(png: bytes, elements: list[Element], out: Path, marks: bool = True) -> float:
-    """Write a JPEG preview and return the scale factor (preview px / device px)."""
+def make_preview(png: bytes, elements: list[Element], out: Path, marks: bool = True, unit: float = 1.0) -> float:
+    """Write a JPEG preview and return the scale factor (preview px per element unit).
+
+    `unit` is screenshot pixels per element unit: 1 on Android (pixels), the screen scale on iOS (points).
+    """
     image = Image.open(io.BytesIO(png)).convert("RGB")
-    scale = min(1.0, PREVIEW_LONG_EDGE / max(image.size))
-    if scale < 1.0:
-        image = image.resize((round(image.width * scale), round(image.height * scale)), Image.LANCZOS)
+    shrink = min(1.0, PREVIEW_LONG_EDGE / max(image.size))
+    scale = shrink * unit
+    if shrink < 1.0:
+        image = image.resize((round(image.width * shrink), round(image.height * shrink)), Image.LANCZOS)
     if marks:
         draw = ImageDraw.Draw(image)
-        font = _font(max(12, round(28 * scale)))
+        font = _font(max(12, round(28 * shrink)))
         for el in elements:
             # Scroll containers span most of the screen and would hide the row numbers inside them.
             if not el.interactive or (el.scrollable and not el.clickable):

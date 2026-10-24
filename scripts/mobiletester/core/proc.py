@@ -23,7 +23,7 @@ def terminate(pid: int) -> None:
         return
     import signal
 
-    with contextlib.suppress(ProcessLookupError):
+    with contextlib.suppress(ProcessLookupError, PermissionError):
         os.killpg(pid, signal.SIGTERM)
 
 
@@ -31,6 +31,10 @@ def is_alive(pid: int) -> bool:
     if sys.platform == "win32":
         out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True)
         return str(pid) in out.stdout
+    # A child of this very process that exited stays a zombie until it is reaped, and looks alive.
+    with contextlib.suppress(ChildProcessError):
+        if os.waitpid(pid, os.WNOHANG)[0] == pid:
+            return False
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

@@ -1,0 +1,57 @@
+{"app_name": "Habits", "timestamp": "2026-10-24 09:12:01.00 +0200", "app_version": "1.0", "bug_type": "309", "os_version": "iPhone OS 27.0 (24A434)", "bundleID": "com.github.aint.Habits", "name": "Habits", "incident_id": "00000000-0000-0000-0000-000000000000"}
+{
+  "procName": "Habits",
+  "exception": {
+    "type": "EXC_BREAKPOINT",
+    "signal": "SIGTRAP",
+    "codes": "0x0000000000000001, 0x0000000100a1b2c4"
+  },
+  "termination": {
+    "namespace": "SIGNAL",
+    "indicator": "Trace/BPT trap: 5",
+    "code": 5
+  },
+  "faultingThread": 0,
+  "threads": [
+    {
+      "triggered": true,
+      "id": 1,
+      "frames": [
+        {
+          "imageIndex": 1,
+          "imageOffset": 1234,
+          "symbol": "Swift._assertionFailure(_:_:file:line:flags:)"
+        },
+        {
+          "imageIndex": 0,
+          "imageOffset": 5678,
+          "symbol": "HabitStore.delete(at:)"
+        },
+        {
+          "imageIndex": 0,
+          "imageOffset": 910,
+          "symbol": "HabitListView.body.getter"
+        },
+        {
+          "imageIndex": 2,
+          "imageOffset": 42
+        },
+        {
+          "imageIndex": 2,
+          "imageOffset": 43
+        }
+      ]
+    }
+  ],
+  "usedImages": [
+    {
+      "name": "Habits"
+    },
+    {
+      "name": "libswiftCore.dylib"
+    },
+    {
+      "name": "SwiftUI"
+    }
+  ]
+}
