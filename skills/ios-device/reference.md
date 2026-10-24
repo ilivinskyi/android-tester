@@ -59,7 +59,7 @@ Taps on an element go to a random point near its center that no other control co
 | `tap --xy X Y` / `tap --preview-xy X Y` | screen points / preview pixels; the guard checks the topmost element under the point |
 | `tap ... --long` | long press, 0.7-1.0 s |
 | `tap ... --allow-risk "APPROVAL"` | only after explicit user approval; logged to `guard_log.jsonl` |
-| `type "TEXT" [--index N] [--submit]` | taps the field first with `--index`, then presses each key on the on-screen keyboard, switching shift and the number and symbol layers; `--submit` presses return; exit 6 when a character is on no key, or no keyboard is shown |
+| `type "TEXT" [--index N] [--submit]` | taps the field first with `--index` and waits up to 3 s for the keyboard, then presses each key on the on-screen keyboard, switching shift and the number and symbol layers; `--submit` presses return; exit 6 when a character is on no key, or no keyboard is shown |
 | `key back` | left-edge swipe to 75-88% of the width; prints a note when the screen didn't change |
 | `key home` | the home button |
 | `key enter\|delete\|space [--repeat N]` | the keyboard's return, delete or space key |

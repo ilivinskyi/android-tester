@@ -71,7 +71,8 @@ def test_layouts_are_cached_to_keep_typing_fast(fixture_xml):
     keyboard.Typist(gb.dump, gb.press, IME).type("Wi-Fi 5G")
     assert gb.pressed == ["Shift", "w", "i", "Symbol keyboard", "Dash", "Letter keyboard", "Shift", "f", "i",
                           "Space", "Symbol keyboard", "5", "Letter keyboard", "Shift", "g"]
-    assert gb.dumps == 2  # initial layer + first visit of the symbols layer
+    # initial layer, first visit of the symbols layer, and a check before each return to letters
+    assert gb.dumps == 4
 
 
 def test_rereads_after_sentence_end_for_auto_capitalisation(fixture_xml):
@@ -97,3 +98,20 @@ def test_no_keyboard_visible(fixture_xml):
     xml = fixture_xml("jumbo_search_results.xml")
     with pytest.raises(keyboard.NoKeyboard):
         keyboard.Typist(lambda: xml, lambda k: None, IME).type("a")
+
+
+class AutoReturningGboard(FakeGboard):
+    """Gboard goes back to letters by itself after an apostrophe, as in "O'Brien" (seen on a Pixel emulator)."""
+
+    def press(self, key: keyboard.Key) -> None:
+        super().press(key)
+        if key.name == "Apostrophe":
+            self.layer = "letters"
+
+
+def test_a_keyboard_that_returns_to_letters_by_itself_is_read_again(fixture_xml):
+    gb = AutoReturningGboard(fixture_xml)
+    keyboard.Typist(gb.dump, gb.press, IME).type("O'Brien")
+    typed = [name for name in gb.pressed if name not in SWITCHES and name != "Shift"]
+    assert typed == ["o", "Apostrophe", "b", "r", "i", "e", "n"]
+    assert gb.pressed.count("Letter keyboard") == 0  # it was already back on letters

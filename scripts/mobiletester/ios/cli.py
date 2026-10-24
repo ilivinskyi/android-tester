@@ -261,13 +261,20 @@ def cmd_tap(args, dev: Device) -> int:
     return EXIT_OK
 
 
+def _wait_for_keyboard(dev: Device, timeout: float = 3.0) -> None:
+    """A busy app shows the keyboard a moment after the field is tapped; a person waits for it too."""
+    deadline = time.monotonic() + timeout
+    while device.read_screen(dev)[1] is None and time.monotonic() < deadline:
+        time.sleep(0.25)
+
+
 def cmd_type(args, dev: Device) -> int:
     driver = _driver(_ready(dev), args)
     if args.index is not None:
         snap, kb, _ = device.last_snapshot(dev.udid)
         el = snap.find(args.index)
         driver.tap(*_tap_point(snap, el, args, (kb.area,) if kb else ()), target=el.describe())
-        time.sleep(0.6)  # the keyboard slides in
+        _wait_for_keyboard(dev)
     try:
         outcome = driver.type_text(args.text, submit=args.submit)
     except keyboard.CannotType as exc:

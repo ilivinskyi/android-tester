@@ -253,12 +253,20 @@ def _check_typed(adb: Adb, expected: str) -> None:
               "(autocorrect or auto-capitalisation?). Observe to check.")
 
 
+def _wait_for_keyboard(adb: Adb, timeout: float = 3.0) -> None:
+    """A busy app shows the keyboard a moment after the field is tapped; a person waits for it too."""
+    deadline = time.monotonic() + timeout
+    while not device.keyboard_visible(adb) and time.monotonic() < deadline:
+        time.sleep(0.25)
+
+
 def cmd_type(args, adb: Adb) -> int:
     driver = _driver(adb, args)
     if args.index is not None:
         snap, _ = device.last_snapshot(adb.serial)
         el = snap.find(args.index)
         driver.tap(*_tap_point(snap, el, args, _keyboard_area(adb)), target=el.describe())
+        _wait_for_keyboard(adb)
     try:
         outcome = driver.type_text(args.text, fallback=args.fallback, submit=args.submit)
     except keyboard.CannotType as exc:

@@ -21,6 +21,16 @@ from .hierarchy import Bounds
 MEMORY_EVERY = int(os.environ.get("ADT_MEMORY_EVERY", "10"))
 
 
+def back_swipe_heights(height: int, keyboard_top: int | None) -> tuple[float, float]:
+    """Where along the left edge a thumb starts the back swipe: the middle of the screen, but above the
+    keyboard when it is open (a swipe that starts on the keyboard goes to the keyboard, not to back)."""
+    low, high = height * 0.35, height * 0.65
+    if keyboard_top is not None:
+        high = min(high, keyboard_top - height * 0.03)
+        low = min(low, high - height * 0.1)
+    return max(low, height * 0.1), max(high, height * 0.15)
+
+
 class Driver:
     def __init__(self, adb: Adb, pace: str = "human", fast: bool = False, verify: bool = True,
                  rng: random.Random | None = None):
@@ -130,7 +140,8 @@ class Driver:
             # The 3-button navigation bar sends exactly this key event.
             return self._perform("back", lambda: self.adb.shell("input", "keyevent", "KEYCODE_BACK"), via="key")
         w, h = self._display()
-        y = round(h * self._uniform((0.35, 0.65)))
+        keyboard = device.keyboard_bounds(self.adb)
+        y = round(self._uniform(back_swipe_heights(h, keyboard.top if keyboard else None)))
         return self.swipe(2, y, round(w * self._uniform((0.3, 0.42))), y + self.rng.randint(-25, 25),
                           ms=round(self._uniform((160, 260))), action="back-gesture")
 

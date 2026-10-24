@@ -130,8 +130,9 @@ _TRANSITIONS = {
 class Typist:
     """Types text key by key. `dump` returns a multi-window XML dump; `press` taps a key.
 
-    The keyboard is only read where it can change on its own: at the start and after a sentence end
-    (auto-capitalisation). Everything else is predicted from layouts already seen.
+    The keyboard is only read where it can change on its own: at the start, after a sentence end
+    (auto-capitalisation), and before leaving a symbol layer (Gboard goes back to letters by itself after
+    some symbols, such as the apostrophe in "O'Brien"). Everything else is predicted from layouts already seen.
     """
 
     def __init__(self, dump: Callable[[], str], press: Callable[[Key], None], ime_package: str):
@@ -141,8 +142,11 @@ class Typist:
         self._layouts: dict[str, Layer] = {}
         self._kind: str | None = None
         self._shifted = False
+        # A key on a symbol layer was pressed since the last read: the keyboard may have switched back.
+        self._unsure = False
 
     def _read(self) -> Layer:
+        self._unsure = False
         layer = parse_layer(self._dump(), self._ime)
         if layer is None:
             raise NoKeyboard()
@@ -179,6 +183,9 @@ class Typist:
     def _find(self, ch: str) -> Key | None:
         if key := self._current().key_for(ch):
             return key
+        # About to switch layers on a guess: pressing a switch key where it isn't would type a symbol.
+        if self._unsure and (key := self._read().key_for(ch)):
+            return key
         for special in self._route(ch):
             if not self._switch(special):
                 continue
@@ -209,6 +216,8 @@ class Typist:
             self._press(key)
             if is_letter:
                 self._shifted = False  # Gboard's shift is one-shot
+            elif self._kind != "letters":
+                self._unsure = True
 
     def press_action(self) -> None:
         key = self._current().specials.get("action") or self._read().specials.get("action")
