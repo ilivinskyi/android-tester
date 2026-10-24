@@ -1,12 +1,13 @@
-# Android Tester Skills - Spec
+# Mobile Tester Skills - Spec
 
 Decisions from the initial interview (2026-10-23), revised after the Jumbo session and the B8 investigation the same day.
 
 ## Scope
 
-- Target: any APK / store app, black-box (no source access assumed).
-- Devices: physical phones over USB and emulators.
-- Packaging: Claude Code plugin `android-tester` (this repo).
+- Target: any APK / store app on Android, any simulator build on iOS, black-box (no source access assumed).
+- Devices: Android phones over USB and emulators; iOS simulators (real iPhones later).
+- Packaging: Claude Code plugin `mobile-tester` (this repo, still named android-tester on GitHub), skills in the open Agent Skills format.
+- iOS design and decisions: [superpowers/specs/2026-10-24-mobile-tester-design.md](superpowers/specs/2026-10-24-mobile-tester-design.md).
 
 ## Skills
 
@@ -53,7 +54,7 @@ Modes of `android-native-tester` (guides in its folder, not separate skills): ex
   Guardrails (payments, messages, account changes, accepting terms, system settings on a personal phone) are never automatic.
 - Per-session interview at every run: ticket and context, mode, device, build installed or to install, start state, focus, time budget.
   In auto mode it only asks what has no default.
-- Files: `.android-tester/config.yaml` (team defaults, devices, auto mode), `.android-tester/apps/<package>/profile.yaml`, `notes.md`, `hooks/`, `checks/`, and gitignored `secrets.local.yaml`.
+- Files: `.mobile-tester/config.yaml` (team defaults, devices, auto mode), `.mobile-tester/apps/<package or bundle id>/profile.yaml`, `notes.md`, `hooks/`, `checks/`, gitignored `secrets.local.yaml`, and `.mobile-tester/state/` (device state, gitignored). One config serves both platforms.
 - App scripts: lifecycle hooks (setup, reset, teardown), login helper, custom checks, app knowledge notes.
 
 ## Jira
@@ -110,3 +111,17 @@ Modes of `android-native-tester` (guides in its folder, not separate skills): ex
 
 - Per-app gitignored secrets file when present; otherwise the user logs in on the device.
 - Credentials never appear in reports or logs.
+
+## iOS (simulators)
+
+- `idt` mirrors `adt`'s command names; both sit on a shared core (report, lifecycle, sessions, guardrails, screen model).
+- Input goes through MTRunner, an XCUITest runner shipped with `idt` that serves HTTP inside the simulator: held presses via `XCUICoordinate.press(forDuration:)`, drags with a hold and a velocity, the home button.
+- Same human rules as Android: 60-150 ms presses at a random uncovered point, think time, settle wait (plus a 0.3 s reaction pause, since XCUITest returns before some animations start), the no-change warning.
+- Back is the left-edge swipe to 75-88% of the width (measured: 17 of 18 at 75%, 5 of 9 at 62%); when it doesn't change the screen, the tool says to use the app's back button.
+- Typing presses the keys read from the keyboard in the app's tree, switching shift and the number and symbol layers; a character on no key stops with a decision.
+- The keyboard and its suggestion bar are their own windows: kept out of the element list, used as an area taps must avoid.
+- Navigation bars, tab bars and toolbars count as drawn above the scroll view under them.
+- Crash watch: new `.ips` reports of the app's executable in `~/Library/Logs/DiagnosticReports`, checked after every action.
+- Evidence: `simctl io recordVideo` with a wall-clock start for clips, the app's unified log, trees saved as JSON next to screenshots.
+- Not yet: real iPhones, performance and memory, `.ipa` inspection.
+

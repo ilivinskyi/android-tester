@@ -3,6 +3,10 @@
 A brief for starting the iOS version of android-tester on a Mac.
 Written on 2026-10-24 at the end of the Android work on Windows; read it first, then `README.md`, `docs/spec.md` and the skills.
 
+**Status, 2026-10-24 (first Mac session):** done on branch `mobile-tester`.
+The open decisions below were taken: one plugin `mobile-tester`, a shared `core` package, our own XCUITest runner, simulators first.
+See [the design](superpowers/specs/2026-10-24-mobile-tester-design.md) and the iOS section of [spec.md](spec.md); file paths in the tables below are from before the split (now `scripts/mobiletester/core/`, `android/`, `ios/`, and `skills/mobile-tester-shared/`).
+
 ## Goal
 
 The same thing android-tester does for Android, for iOS apps on simulators and real iPhones:
