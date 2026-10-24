@@ -125,3 +125,9 @@ Modes of `android-native-tester` (guides in its folder, not separate skills): ex
 - Evidence: `simctl io recordVideo` with a wall-clock start for clips, the app's unified log, trees saved as JSON next to screenshots.
 - Not yet: real iPhones, performance and memory, `.ipa` inspection.
 
+## Open work
+
+- Not yet verified on an Android device or emulator: the report redesign, `adt app reset`, session-start defaults, the log and memory checks, and everything after the split into `core` and `android`.
+- Test-case documentation of the plugin's own steps in `docs/testcases/`, grouped by functionality.
+- iOS: real iPhones, performance and memory checks, `.ipa` inspection.
+- Planned for both platforms: an exploration coverage map from screen fingerprints, a selector cache for test cases, a monkey/stress mode.

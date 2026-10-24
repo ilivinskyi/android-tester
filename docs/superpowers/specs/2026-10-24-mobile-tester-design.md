@@ -1,6 +1,6 @@
 # mobile-tester: iOS support and a shared core
 
-Written on 2026-10-24, from the iOS handoff (`docs/ios-handoff.md`) and the first Mac session.
+Written on 2026-10-24, from the iOS handoff written at the end of the Android work and the first Mac session.
 
 ## Intent
 
