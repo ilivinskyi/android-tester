@@ -1,6 +1,6 @@
 # Mobile Tester for Claude Code
 
-**Let Claude test your Android or iOS app the way a person would, on a real Android phone, an emulator or an iOS simulator, and hand you a QA report you can act on.**
+**Let Claude test your Android or iOS app the way a person would, on a real phone, an emulator or an iOS simulator, and hand you a QA report you can act on.**
 
 `/android-native-tester` and `/ios-native-tester` run exploratory testing, written test cases, bug reproduction and UI/accessibility reviews on any Android or iOS app.
 They drive the device with human-like input, check every step, record evidence, and end each session with the same standard report and Jira-ready bug drafts.
@@ -12,7 +12,7 @@ They drive the device with human-like input, check every step, record evidence, 
 /ios-native-tester explore com.example.app
 ```
 
-iOS support is new: it works on simulators (real iPhones come later), and has no performance or memory measurements yet.
+iOS support is new: it works on simulators and on real iPhones and iPads, and has no performance or memory measurements yet.
 
 ## Why this exists
 
@@ -175,6 +175,29 @@ An emulator from Android Studio works too and is the better choice for tests tha
 4. If the on-screen keyboard doesn't show when a text field is tapped, turn it on in Simulator: I/O > Keyboard > Toggle Software Keyboard (cmd-K). The tester types on it key by key.
 
 The first `idt` command that touches the screen builds the XCUITest runner (about a minute, once per Xcode version) and starts it (about 15 seconds per simulator boot).
+
+## Prepare a real iPhone or iPad
+
+A real device runs the same XCUITest runner, signed with your Apple development team.
+Every step here is yours: the tester tells you what is missing (`idt doctor` prints a `to do:` line per device) and waits.
+
+1. Connect the device by cable, unlock it and tap **Trust**.
+   After that it also works over Wi-Fi, but you name it with `-s` there, and USB is faster.
+2. On the device, turn on **Settings > Privacy & Security > Developer Mode** and restart it.
+   Then turn on **Settings > Developer > Enable UI Automation**.
+3. Sign in to Xcode with your Apple ID: **Xcode > Settings > Accounts**.
+   A free personal team works; its builds expire after 7 days, and the first time the device asks you to trust the developer under **Settings > General > VPN & Device Management**.
+4. Give the tester your team id (10 letters and digits, shown in Xcode's Accounts pane or on developer.apple.com under Membership); it runs:
+   ```bash
+   idt -s <device UDID> runner build --team <TEAMID>
+   ```
+   Xcode creates a development certificate and profile in that team and registers the device with it.
+   The team is remembered on this Mac.
+5. Keep the device unlocked while it is tested.
+
+idt reaches the runner through the encrypted tunnel Xcode's CoreDevice keeps to the device; the runner accepts no connections from the network.
+A real device counts as personal unless your device inventory says otherwise: installing, uninstalling and clearing an app's data there are refused until you approve them, and the report says the device is physical and personal.
+The app under test is whatever is installed on the device (App Store apps too), or a signed device build (`.app`, or the `.app` inside an `.ipa`).
 
 ## Install in Claude Code
 
@@ -410,7 +433,7 @@ See [skills/android-device/reference.md](skills/android-device/reference.md) for
 uv run --script scripts/idt.py doctor
 ```
 
-It covers simulators, the XCUITest runner, observing (element tree plus annotated screenshot), human-like actions, app install and reset, sessions, recording, clips, the app log, crash reports, hooks and reports.
+It covers simulators and real devices, the XCUITest runner, observing (element tree plus annotated screenshot), human-like actions, app install and reset, sessions, recording, clips, the app log, crash reports, hooks and reports.
 See [skills/ios-device/reference.md](skills/ios-device/reference.md) for every command.
 
 ## Limitations
@@ -420,7 +443,8 @@ See [skills/ios-device/reference.md](skills/ios-device/reference.md) for every c
 - Screens protected with FLAG_SECURE (banking apps, DRM video) record and screenshot as black.
 - A UI that never goes idle (endless animation, video) can make the hierarchy dump fail; the tool falls back to screenshots.
 - Inputs injected over adb come from a virtual input device, so a bug that only automation reproduces stays Unconfirmed until a person reproduces it. That's deliberate.
-- iOS: simulators only; no performance, memory or leak checks yet; each key press takes about half a second because XCUITest waits for the app to go idle; accented letters (long press) and other keyboard languages stop and ask.
+- iOS: no performance, memory or leak checks yet; each key press takes about half a second because XCUITest waits for the app to go idle; accented letters (long press) and other keyboard languages stop and ask.
+- iOS real devices: no app log streaming yet (crash reports and recordings work); over Wi-Fi every step is slower than over USB.
 - iOS: an app only shows in `idt observe` when `idt` knows its bundle id (the session's app, the last launched one, or `--app`).
 
 ## Development

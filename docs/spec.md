@@ -4,8 +4,8 @@ Decisions from the initial interview (2026-10-23), revised after the Jumbo sessi
 
 ## Scope
 
-- Target: any APK / store app on Android, any simulator build on iOS, black-box (no source access assumed).
-- Devices: Android phones over USB and emulators; iOS simulators (real iPhones later).
+- Target: any APK / store app on Android; on iOS any simulator build, and on a real device any installed app or signed build; black-box (no source access assumed).
+- Devices: Android phones over USB and emulators; iOS simulators, and real iPhones and iPads over USB or Wi-Fi.
 - Packaging: Claude Code plugin `mobile-tester` (this repo, still named android-tester on GitHub), skills in the open Agent Skills format.
 - iOS design and decisions: [superpowers/specs/2026-10-24-mobile-tester-design.md](superpowers/specs/2026-10-24-mobile-tester-design.md).
 
@@ -123,7 +123,22 @@ Modes of `android-native-tester` (guides in its folder, not separate skills): ex
 - Navigation bars, tab bars and toolbars count as drawn above the scroll view under them.
 - Crash watch: new `.ips` reports of the app's executable in `~/Library/Logs/DiagnosticReports`, checked after every action.
 - Evidence: `simctl io recordVideo` with a wall-clock start for clips, the app's unified log, trees saved as JSON next to screenshots.
-- Not yet: real iPhones, performance and memory, `.ipa` inspection.
+- Not yet: performance and memory, `.ipa` inspection.
+
+## iOS (real devices)
+
+- Discovery and apps through `xcrun devicectl` (CoreDevice), reading its `--json-output` file, the interface Apple keeps stable; simctl and devicectl modules offer the same app functions.
+- The runner is built per device and signed by the user's team (`-allowProvisioningUpdates -allowProvisioningDeviceRegistration`, automatic signing, bundle id `dev.mobiletester.MTRunner.<team>`), since app ids are global and the profile must list the device.
+- The team id is the user's answer, never guessed; Xcode's signed-in teams are shown as hints; it is remembered per Mac.
+- devicectl has no port forward.
+  While xcodebuild runs the test, CoreDevice keeps an IPv6 tunnel to the device (a utun on the Mac); `devicectl device info details` gives the device's `tunnelIPAddress`, new for every tunnel.
+  The runner listens on all IPv6 addresses but admits only connections from unique local addresses over a non-Wi-Fi, non-cellular, non-Ethernet, non-loopback interface, so nothing on the network can drive the device.
+  idt follows the address when the tunnel comes back with a new one.
+- Without `-s`, only a USB-connected ready device is chosen implicitly; a device on Wi-Fi may be someone's phone in the next room.
+- Crash watch on a device: only when the app has stopped running (the runner says so cheaply), for 20 s, it copies the app's new `.ips` files from `systemCrashLogs` with the crash's own time as their modification time.
+- Recording: `devicectl device capture screen-record`, stopped with SIGINT like simctl's.
+- Guardrails: a real device is personal unless the inventory says `personal: false`; install, uninstall and clear-data are blocked there until `--allow-risk` carries the user's approval; `session.json` records `kind: physical` and `personal`, and the report shows them.
+- Not yet on devices: the app's unified log.
 
 ## Open work
 

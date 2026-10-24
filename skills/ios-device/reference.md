@@ -6,7 +6,7 @@ Global options (before or after the command):
 
 | Option | Meaning |
 |---|---|
-| `-s UDID` | simulator UDID or name (otherwise `IDT_UDID`, otherwise the only booted simulator) |
+| `-s UDID` | simulator or device UDID or name (otherwise `IDT_UDID`, otherwise the only booted simulator or USB-connected ready device; a device on Wi-Fi only when named) |
 | `--fast` | no pacing or checks (presses still last 50 ms). Setup and reset steps only |
 | `--pace human\|slow` | human (default) or slow pacing; also `MT_PACE` |
 | `--no-verify` | skip the did-the-screen-change check (also skips waiting for the screen to settle) |
@@ -15,10 +15,10 @@ Global options (before or after the command):
 
 | Command | Purpose |
 |---|---|
-| `doctor` | Xcode, ffmpeg, uv, whether the runner is built, booted simulators and their runner |
-| `devices [--json]` | UDID, state, name, iOS version of every available simulator |
-| `info [--json]` | model, iOS version, screen in points and scale, navigation, keyboard language, locale, languages |
-| `runner build` / `start` / `stop` / `status` | the XCUITest runner: built once per Xcode version into `~/Library/Caches/mobile-tester`, started on demand by any UI command, one port per simulator |
+| `doctor` | Xcode, ffmpeg, uv, whether the runner is built, booted simulators and their runner, paired devices with what each still needs (`to do:`), the signing team |
+| `devices [--json]` | UDID, state, kind, name, iOS version of every paired device (`ready`, `developer mode off`, `unavailable`, `not paired`; USB or Wi-Fi) and every available simulator |
+| `info [--json]` | model, iOS version, kind (`simulator` or `physical`), screen in points and scale, navigation, keyboard language, locale, languages; on a device also the connection (USB or Wi-Fi) |
+| `runner build [--team TEAMID]` / `start` / `stop` / `status` | the XCUITest runner: built once per Xcode version into `~/Library/Caches/mobile-tester`, started on demand by any UI command, one port per simulator or device. On a device it is built for that device and signed by the user's team (`--team`, remembered in `~/Library/Application Support/mobile-tester/ios-signing.json`, or `MT_IOS_TEAM`); without a team every device command exits 6 (`DECISION NEEDED`) |
 
 ## Observing
 
@@ -42,7 +42,7 @@ Element line format:
 - System alerts (SpringBoard) are listed after the app's elements and are on top.
 - The keyboard is not in the list: `observe` prints its area, and taps on elements behind it are refused.
 
-State files per simulator under `MT_HOME` (default `.mobile-tester/state/<udid>/` in the project): `latest.json`, `latest_tree.json`, `latest.png`, `latest_preview.jpg`, `facts.json`, `runner.json`, `runner.log`.
+State files per simulator or device under `MT_HOME` (default `.mobile-tester/state/<udid>/` in the project): `latest.json`, `latest_tree.json`, `latest.png`, `latest_preview.jpg`, `facts.json`, `runner.json`, `runner.log`.
 
 ## Acting (human mode by default)
 
@@ -75,23 +75,23 @@ Taps on an element go to a random point near its center that no other control co
 | `app list [FILTER] [--all]` | installed apps; built-in ones only with `--all` |
 | `app current` | the app idt works with and its state (foreground, background, not running) |
 | `app info BUNDLE` | name, versionName (marketing version), versionCode (build), executable, minimum iOS |
-| `app launch BUNDLE` | through simctl (not an icon tap); remembered as the app to observe |
+| `app launch BUNDLE` | through simctl or devicectl (not an icon tap); remembered as the app to observe |
 | `app stop BUNDLE` | terminate |
-| `app reset BUNDLE [--level restart\|clear-data]` | known start state: terminate, reinstall (`clear-data`: the `.app` idt installed last), launch, wait until the screen settles; adds itself to the session's `setup_steps_fast`. Says so when the app isn't in front afterwards (a system alert) |
-| `app install PATH.app` | a simulator build; `.ipa` files are refused (device builds) |
-| `app uninstall BUNDLE` | |
+| `app reset BUNDLE [--level restart\|clear-data] [--allow-risk "APPROVAL"]` | known start state: terminate, reinstall (`clear-data`: the `.app` idt installed last), launch, wait until the screen settles; adds itself to the session's `setup_steps_fast`. Says so when the app isn't in front afterwards (a system alert). `clear-data` on a personal device needs `--allow-risk` |
+| `app install PATH.app [--allow-risk "APPROVAL"]` | a simulator build on a simulator, a signed device build on a device (a mix-up is refused); `.ipa`: unzip it and install `Payload/<name>.app`. On a personal device needs `--allow-risk` |
+| `app uninstall BUNDLE [--allow-risk "APPROVAL"]` | on a personal device needs `--allow-risk` |
 
 ## Sessions and evidence
 
 | Command | Notes |
 |---|---|
-| `session start [--dir RUN] [--package BUNDLE] [--mode explore\|test-case\|repro\|ui-review\|retest] [--charter C] [--ticket T] [--record] [--log]` | creates `screenshots/ videos/ logs/ bugs/`, `session.json` (platform, device, app), `findings.json`; actions log to `logs/actions.jsonl`. Without `--dir`: `<reports dir from .mobile-tester/config.yaml>/<date>-<app>-<mode>[-<ticket>]` |
+| `session start [--dir RUN] [--package BUNDLE] [--mode explore\|test-case\|repro\|ui-review\|retest] [--charter C] [--ticket T] [--record] [--log]` | creates `screenshots/ videos/ logs/ bugs/`, `session.json` (platform, device with kind and, for a real device, `personal`, app), `findings.json`; actions log to `logs/actions.jsonl`. Without `--dir`: `<reports dir from .mobile-tester/config.yaml>/<date>-<app>-<mode>[-<ticket>]`. `--log` is skipped with a note on a device |
 | `session end [--discard-video] [--no-report]` | stops the recording and the app log, then builds the report when `report check` passes |
 | `session status` | active run folder |
-| `record start --out FILE.mp4` / `record stop [--discard]` | `simctl io recordVideo`; writes `FILE.timeline.json` with the wall-clock start |
+| `record start --out FILE.mp4` / `record stop [--discard]` | `simctl io recordVideo`, on a device `devicectl device capture screen-record`; writes `FILE.timeline.json` with the wall-clock start |
 | `clip --from T --to T --out FILE [--video V] [--pad 3]` | T = `t` from actions.jsonl, `HH:MM:SS` today, or epoch; default video is the session's |
-| `log start --out FILE (--package BUNDLE \| --process NAME)` / `log stop` | the app's unified log, streamed in the background |
-| `crashes [--package BUNDLE] [--since EPOCH]` | the app's crash reports (`~/Library/Logs/DiagnosticReports/<executable>-*.ips`) since the session started, with exception and top frames |
+| `log start --out FILE (--package BUNDLE \| --process NAME)` / `log stop` | the app's unified log, streamed in the background (simulators only) |
+| `crashes [--package BUNDLE] [--since EPOCH]` | the app's crash reports (`~/Library/Logs/DiagnosticReports/<executable>-*.ips`; on a device copied from its crash logs into `.mobile-tester/state/<udid>/crashes/`) since the session started, with exception and top frames |
 | `hook NAME --package P [-- ARGS]` | runs `.mobile-tester/apps/P/hooks/NAME.(py\|sh)` |
 | `check NAME --package P [-- ARGS]` | runs `.mobile-tester/apps/P/checks/NAME.(py\|sh)` |
 | `report check RUN` / `report build RUN` / `report confirm ...` | as in adt: the same report on both platforms |
@@ -105,7 +105,7 @@ Hook and check scripts receive `IDT_UDID`, `IDT` (command line for idt), `MT_PLA
 |---|---|
 | 0 | ok |
 | 2 | bad input or report problems |
-| 3 | simulator, Xcode or runner problem |
+| 3 | simulator, device, Xcode or runner problem |
 | 4 | element not found, ambiguous, covered, or wait timed out |
 | 5 | blocked by a guardrail: ask the user |
 | 6 | decision needed: ask the user |

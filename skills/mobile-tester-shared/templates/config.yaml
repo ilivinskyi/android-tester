@@ -19,7 +19,7 @@ jira:
 severity_notes: ""          # team additions to the standard severity scale, if any
 
 devices:
-  - id: ""                  # Android serial (`adt devices`) or iOS simulator UDID (`idt devices`)
+  - id: ""                  # Android serial (`adt devices`) or iOS simulator or device UDID (`idt devices`)
     platform: Android       # Android | iOS
     name: ""                # e.g. "Test phone 1", "iPhone 17 simulator"
     kind: physical          # physical | emulator | simulator

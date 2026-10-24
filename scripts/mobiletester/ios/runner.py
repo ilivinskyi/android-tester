@@ -1,8 +1,11 @@
 """The MTRunner XCUITest runner (runner/ next to this file): building it, starting it, talking to it.
 
 It is built once per Xcode version and source change into ~/Library/Caches/mobile-tester, then run with
-`xcodebuild test-without-building` in the background. Its HTTP server listens inside the simulator, which
-shares the Mac's network, on a port derived from the simulator's UDID.
+`xcodebuild test-without-building` in the background. Its HTTP server listens on a port derived from the
+UDID: on a simulator, which shares the Mac's network, at 127.0.0.1; on a real device at the device's end of
+CoreDevice's tunnel (see devicectl.py), and only there, so nobody else on the Wi-Fi can drive the device.
+A device build is signed by the user's team (signing.py) and made for that device, so its provisioning
+profile includes it.
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ from pathlib import Path
 
 from ..core import state
 from ..core.proc import detached_kwargs, is_alive
+from . import devicectl, signing
 
 PROJECT = Path(__file__).resolve().parent / "runner"
 SPRINGBOARD = "com.apple.springboard"
@@ -30,6 +34,20 @@ FOREGROUND = 4
 
 class RunnerError(Exception):
     pass
+
+
+def start_hint(log: str) -> str:
+    """The usual reasons a device refuses to run the runner, as what the person has to do."""
+    if "Locked" in log or ("locked" in log and "passcode" in log):
+        return ": the device is locked; unlock it and keep it unlocked while testing"
+    if "UI Automation" in log or "Enable UI Automation" in log:
+        return ": UI Automation is off; on the device, Settings > Developer > Enable UI Automation"
+    if "untrusted" in log.lower() or "not trusted" in log.lower() or "invalid code signature" in log.lower():
+        return (": the device doesn't trust the developer yet; on the device, Settings > General > VPN & Device "
+                "Management, tap the developer app entry and Trust (the person holding the device does this)")
+    if "Developer Mode" in log:
+        return ": Developer Mode is off on the device (Settings > Privacy & Security > Developer Mode)"
+    return ""
 
 
 def port_for(udid: str) -> int:
@@ -56,45 +74,110 @@ def _build_key() -> str:
     return digest.hexdigest()[:12]
 
 
-def build_dir() -> Path:
+def build_dir(device: str | None = None, team: str | None = None) -> Path:
     base = Path(os.environ.get("MT_CACHE", Path.home() / "Library" / "Caches" / "mobile-tester"))
-    return base / "ios-runner" / _build_key()
+    flavour = f"device-{team}-{device}" if device else "simulator"
+    return base / "ios-runner" / _build_key() / flavour
 
 
-def xctestrun(build: bool = True) -> Path:
-    """The built runner's .xctestrun file; builds it first when needed (about a minute, once)."""
-    directory = build_dir()
+def bundle_id(team: str) -> str:
+    """App ids are unique across all teams, so the device build gets the team in its bundle id."""
+    return f"dev.mobiletester.MTRunner.{team.lower()}"
+
+
+def _build_command(directory: Path, device: str | None, team: str | None) -> list[str]:
+    cmd = [_xcodebuild(), "build-for-testing", "-project", str(PROJECT / "MTRunner.xcodeproj"), "-scheme",
+           "MTRunner", "-derivedDataPath", str(directory)]
+    if not device:
+        return [*cmd, "-destination", "generic/platform=iOS Simulator", "CODE_SIGNING_ALLOWED=NO"]
+    # Automatic signing with the user's team; Xcode creates the App ID and a development profile and, for a
+    # device it hasn't seen, registers it with the team.
+    return [*cmd, "-destination", f"id={device}", "-allowProvisioningUpdates", "-allowProvisioningDeviceRegistration",
+            f"DEVELOPMENT_TEAM={team}", "CODE_SIGN_STYLE=Automatic", f"PRODUCT_BUNDLE_IDENTIFIER={bundle_id(team)}"]
+
+
+def xctestrun(build: bool = True, device: str | None = None, team: str | None = None) -> Path:
+    """The built runner's .xctestrun file; builds it first when needed (about a minute, once).
+
+    Without `device` it is the simulator build; with it, the build signed by `team` for that device.
+    """
+    if device and not team:
+        raise signing.MissingTeam(signing.missing_team_message())
+    directory = build_dir(device, team)
     found = sorted((directory / "Build" / "Products").glob("*.xctestrun")) if directory.exists() else []
     if found:
         return found[0]
     if not build:
-        raise RunnerError("the runner is not built yet: `idt runner build`")
+        raise RunnerError("the runner is not built yet: `idt runner build`" + (" --team ID" if device else ""))
     directory.mkdir(parents=True, exist_ok=True)
     log = directory / "build.log"
     with log.open("wb") as fh:
-        proc = subprocess.run(
-            [_xcodebuild(), "build-for-testing", "-project", str(PROJECT / "MTRunner.xcodeproj"), "-scheme",
-             "MTRunner", "-destination", "generic/platform=iOS Simulator", "-derivedDataPath", str(directory),
-             "CODE_SIGNING_ALLOWED=NO"],
-            stdout=fh, stderr=subprocess.STDOUT)
+        proc = subprocess.run(_build_command(directory, device, team), stdout=fh, stderr=subprocess.STDOUT)
     found = sorted((directory / "Build" / "Products").glob("*.xctestrun"))
     if proc.returncode != 0 or not found:
-        tail = "\n".join(log.read_text(errors="replace").splitlines()[-15:])
-        raise RunnerError(f"building the runner failed (full log: {log}):\n{tail}")
+        text = log.read_text(errors="replace")
+        tail = "\n".join(text.splitlines()[-15:])
+        hint = signing_hint(text) if device else ""
+        raise RunnerError(f"building the runner failed{hint} (full log: {log}):\n{tail}")
     return found[0]
 
 
+def signing_hint(build_log: str) -> str:
+    """What the user has to do about the usual signing failures, in front of the raw log."""
+    if "No Accounts" in build_log or "No account for team" in build_log:
+        return ": the team's Apple ID is not signed in to Xcode (Xcode > Settings > Accounts; the user does this)"
+    if "No signing certificate" in build_log or "No profiles for" in build_log:
+        return (": Xcode could not create a development certificate or profile for this team; open Xcode > "
+                "Settings > Accounts, select the team and Manage Certificates (the user does this)")
+    if "Developer Mode" in build_log:
+        return ": Developer Mode is off on the device"
+    return ""
+
+
 class Runner:
-    def __init__(self, udid: str, port: int | None = None):
+    def __init__(self, udid: str, port: int | None = None, physical: bool = False):
         self.udid = udid
         self.port = port or port_for(udid)
-        self.url = f"http://127.0.0.1:{self.port}"
+        self.physical = physical
+        self._host = None if physical else "127.0.0.1"
 
     @property
     def _state_file(self) -> Path:
         return state.device_dir(self.udid) / "runner.json"
 
+    @property
+    def host(self) -> str:
+        """127.0.0.1 for a simulator; for a device the tunnel address the runner was started with."""
+        if self._host is None:
+            self._host = (state.read_json(self._state_file) or {}).get("host") or devicectl.tunnel_address(self.udid)
+        return self._host
+
+    @property
+    def url(self) -> str:
+        return f"http://[{self.host}]:{self.port}" if ":" in self.host else f"http://{self.host}:{self.port}"
+
     def call(self, method: str, path: str, body: dict | None = None, timeout: float = 60) -> dict | bytes:
+        try:
+            return self._call(method, path, body, timeout)
+        except RunnerError as exc:
+            if not (self.physical and isinstance(exc.__cause__, OSError) and self._retunnel()):
+                raise
+            return self._call(method, path, body, timeout)
+
+    def _retunnel(self) -> bool:
+        """The tunnel came back with a new address (cable replugged, Wi-Fi changed): follow it."""
+        try:
+            address = devicectl.tunnel_address(self.udid)
+        except devicectl.DevicectlError:
+            return False
+        if address == self._host:
+            return False
+        self._host = address
+        if running := state.read_json(self._state_file):
+            state.write_json(self._state_file, {**running, "host": address})
+        return True
+
+    def _call(self, method: str, path: str, body: dict | None, timeout: float) -> dict | bytes:
         data = json.dumps(body or {}).encode() if method == "POST" else None
         request = urllib.request.Request(self.url + path, data=data, method=method,
                                          headers={"Content-Type": "application/json"})
@@ -108,38 +191,59 @@ class Runner:
             detail = exc.read().decode(errors="replace")
             raise RunnerError(f"runner {path}: {detail}") from exc
         except (urllib.error.URLError, ConnectionError, TimeoutError) as exc:
+            cause = exc.reason if isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, OSError) else exc
             raise RunnerError(f"the runner is not reachable on {self.url} ({exc}); start it with "
-                              "`idt runner start`") from exc
+                              "`idt runner start`") from cause
 
     def alive(self) -> bool:
+        if self.physical:
+            # On a device the runner lives only as long as the xcodebuild that started it; checking that first
+            # saves bringing up a tunnel just to find nothing there.
+            running = state.read_json(self._state_file)
+            if not running or not is_alive(running["pid"]):
+                return False
         try:
-            return bool(self.call("GET", "/status", timeout=2).get("ok"))
+            return bool(self.call("GET", "/status", timeout=2 if not self.physical else 5).get("ok"))
         except RunnerError:
             return False
 
     # --- lifecycle -------------------------------------------------------------------------------
 
-    def start(self, timeout: float = 180) -> str:
+    def start(self, timeout: float | None = None) -> str:
         if self.alive():
             return "already running"
-        testrun = xctestrun()
+        team = signing.team() if self.physical else None
+        testrun = xctestrun(device=self.udid if self.physical else None, team=team)
         log = state.device_dir(self.udid) / "runner.log"
         env = {**os.environ, "TEST_RUNNER_MT_RUNNER_PORT": str(self.port)}
+        if self.physical:
+            env["TEST_RUNNER_MT_RUNNER_BIND"] = "tunnel"
         with log.open("wb") as fh:
             proc = subprocess.Popen(
                 [_xcodebuild(), "test-without-building", "-xctestrun", str(testrun), "-destination",
                  f"id={self.udid}"],
                 stdout=fh, stderr=subprocess.STDOUT, env=env, **detached_kwargs())
-        state.write_json(self._state_file, {"pid": proc.pid, "port": self.port, "log": str(log)})
-        deadline = time.monotonic() + timeout
+        running = {"pid": proc.pid, "port": self.port, "log": str(log)}
+        state.write_json(self._state_file, running)
+        # A device installs the runner over the cable or Wi-Fi first, and may wait for its screen to unlock.
+        deadline = time.monotonic() + (timeout or (300 if self.physical else 180))
         while time.monotonic() < deadline:
-            if self.alive():
-                return f"started on port {self.port} (xcodebuild pid {proc.pid})"
+            if self.physical and self._host is None:
+                # xcodebuild holds the tunnel while it runs the test, so its address is stable from here on.
+                try:
+                    self._host = devicectl.tunnel_address(self.udid)
+                    state.write_json(self._state_file, {**running, "host": self._host})
+                except devicectl.DevicectlError:
+                    pass
+            if self._host is not None and self.alive():
+                return f"started on {self.url} (xcodebuild pid {proc.pid})"
             if proc.poll() is not None:
-                tail = "\n".join(log.read_text(errors="replace").splitlines()[-15:])
-                raise RunnerError(f"the runner exited during start (log: {log}):\n{tail}")
+                text = log.read_text(errors="replace")
+                tail = "\n".join(text.splitlines()[-15:])
+                raise RunnerError(f"the runner exited during start{start_hint(text)} (log: {log}):\n{tail}")
             time.sleep(1)
-        raise RunnerError(f"the runner did not answer within {timeout:.0f}s (log: {log})")
+        raise RunnerError(f"the runner did not answer within {timeout or (300 if self.physical else 180):.0f}s "
+                          f"(log: {log})")
 
     def ensure(self) -> None:
         if not self.alive():
@@ -147,12 +251,13 @@ class Runner:
 
     def stop(self) -> str:
         stopped = False
-        try:
-            self.call("POST", "/shutdown", timeout=5)
-            stopped = True
-        except RunnerError:
-            pass
         running = state.read_json(self._state_file)
+        if running or not self.physical:
+            try:
+                self.call("POST", "/shutdown", timeout=5)
+                stopped = True
+            except (RunnerError, devicectl.DevicectlError):
+                pass
         if running and is_alive(running["pid"]):
             deadline = time.monotonic() + 15
             while is_alive(running["pid"]) and time.monotonic() < deadline:

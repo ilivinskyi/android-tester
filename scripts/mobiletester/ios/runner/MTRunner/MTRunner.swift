@@ -1,9 +1,11 @@
 // The mobile-tester iOS runner: a UI test that never ends and serves XCUITest over local HTTP.
 //
 // idt starts it with `xcodebuild test-without-building`. The simulator shares the Mac's network, so the
-// server on 127.0.0.1:<port> inside the simulator is reachable from idt. Every XCUITest call has to run on
-// the main thread: the network thread hands each request to the main queue, and the test keeps the main
-// run loop spinning until /shutdown.
+// server on 127.0.0.1:<port> inside the simulator is reachable from idt. On a real device idt connects through
+// CoreDevice's tunnel (MT_RUNNER_BIND=tunnel): the server then accepts only connections that come through a
+// tunnel, never over Wi-Fi, cellular or USB networking directly. Every XCUITest call has to run on the main
+// thread: the network thread hands each request to the main queue, and the test keeps the main run loop
+// spinning until /shutdown.
 
 import Network
 import XCTest
@@ -16,7 +18,7 @@ final class MTRunner: XCTestCase {
     func testServe() throws {
         let env = ProcessInfo.processInfo.environment
         let port = UInt16(env["MT_RUNNER_PORT"] ?? "") ?? 22087
-        let server = try HTTPServer(port: port, handler: Handler())
+        let server = try HTTPServer(port: port, tunnelOnly: env["MT_RUNNER_BIND"] == "tunnel", handler: Handler())
         server.start()
         while !server.stopped {
             RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.1))
@@ -86,6 +88,8 @@ final class Handler {
             "scale": screen.scale,
             "locale": Locale.current.identifier,
             "language": Locale.preferredLanguages.first ?? "",
+            "languages": Locale.preferredLanguages,
+            "device_name": UIDevice.current.name,
         ]
     }
 
@@ -239,25 +243,57 @@ final class Handler {
 final class HTTPServer {
     private let listener: NWListener
     private let handler: Handler
+    private let tunnelOnly: Bool
     private let queue = DispatchQueue(label: "mtrunner.http")
     var stopped = false
 
-    init(port: UInt16, handler: Handler) throws {
+    init(port: UInt16, tunnelOnly: Bool, handler: Handler) throws {
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
-        parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!)
+        let endpointPort = NWEndpoint.Port(rawValue: port)!
+        if tunnelOnly {
+            // The tunnel's address changes with every connection, so listen on all IPv6 addresses and let only
+            // tunnel connections in (see admits).
+            parameters.prohibitedInterfaceTypes = [.wifi, .cellular, .wiredEthernet]
+            parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: "::", port: endpointPort)
+        } else {
+            parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: endpointPort)
+        }
         listener = try NWListener(using: parameters)
+        self.tunnelOnly = tunnelOnly
         self.handler = handler
     }
 
     func start() {
         listener.newConnectionHandler = { [weak self] connection in
             guard let self else { return }
+            guard self.tunnelOnly else {
+                connection.start(queue: self.queue)
+                self.receive(connection, buffer: Data())
+                return
+            }
+            connection.stateUpdateHandler = { state in
+                guard case .ready = state else { return }
+                if HTTPServer.admits(connection) {
+                    self.receive(connection, buffer: Data())
+                } else {
+                    NSLog("MTRunner refused a connection from \(connection.endpoint)")
+                    connection.cancel()
+                }
+            }
             connection.start(queue: self.queue)
-            self.receive(connection, buffer: Data())
         }
         listener.start(queue: queue)
-        NSLog("MTRunner listening")
+        NSLog("MTRunner listening on port \(listener.port?.rawValue ?? 0)\(tunnelOnly ? " (tunnel only)" : "")")
+    }
+
+    /// A connection through CoreDevice's tunnel: from a unique local IPv6 address (fc00::/7, which the
+    /// tunnel uses) over a virtual interface, not over Wi-Fi, cellular, USB networking or loopback.
+    static func admits(_ connection: NWConnection) -> Bool {
+        guard case let .hostPort(host, _) = connection.endpoint, case let .ipv6(address) = host,
+              let first = address.rawValue.first, first & 0xFE == 0xFC else { return false }
+        guard let path = connection.currentPath else { return false }
+        return ![.wifi, .cellular, .wiredEthernet, .loopback].contains { path.usesInterfaceType($0) }
     }
 
     private func receive(_ connection: NWConnection, buffer: Data) {

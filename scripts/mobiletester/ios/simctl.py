@@ -42,6 +42,8 @@ class Simulator:
     state: str
     runtime: str  # "iOS 27.0"
 
+    kind = "simulator"
+
     @property
     def booted(self) -> bool:
         return self.state == "Booted"

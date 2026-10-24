@@ -1,8 +1,8 @@
-"""Background evidence on the simulator: screen recording and the app's unified log.
+"""Background evidence: screen recording, and on a simulator the app's unified log.
 
-`simctl io recordVideo` writes one file for the whole session and finishes it on SIGINT. It prints
-"Recording started" once frames flow; that moment is the video's wall-clock start, so clips can be cut by
-action-log times (core/clip.py).
+`simctl io recordVideo` (simulator) and `devicectl device capture screen-record` (device) write one file for
+the whole session and finish it on SIGINT. Each says so once frames flow; that moment is the video's
+wall-clock start, so clips can be cut by action-log times (core/clip.py).
 """
 
 from __future__ import annotations
@@ -28,7 +28,19 @@ def _file(udid: str, name: str) -> Path:
     return state.device_dir(udid) / name
 
 
-def record_start(udid: str, out: Path, wait: float = 10.0) -> int:
+def _record_command(udid: str, out: Path, physical: bool) -> list[str]:
+    if physical:
+        return [xcrun(), "devicectl", "device", "capture", "screen-record", "--device", udid, "--destination",
+                str(out), "--codec", "h264"]
+    return [xcrun(), "simctl", "io", udid, "recordVideo", "--codec=h264", "--force", str(out)]
+
+
+def recording_started(output: str) -> bool:
+    """simctl prints 'Recording started'; devicectl reports that it is recording."""
+    return any(marker in output for marker in ("Recording started", "Recording...", "recording"))
+
+
+def record_start(udid: str, out: Path, wait: float = 10.0, physical: bool = False) -> int:
     rec_file = _file(udid, "recording.json")
     if (running := state.read_json(rec_file)) and is_alive(running["pid"]):
         raise CaptureError(f"a recording is already running (pid {running['pid']}): `idt record stop` first")
@@ -36,17 +48,17 @@ def record_start(udid: str, out: Path, wait: float = 10.0) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     log = _file(udid, "recording.log")
     with log.open("wb") as fh:
-        proc = subprocess.Popen([xcrun(), "simctl", "io", udid, "recordVideo", "--codec=h264", "--force", str(out)],
-                                stdout=fh, stderr=subprocess.STDOUT, **detached_kwargs())
+        proc = subprocess.Popen(_record_command(udid, out, physical), stdout=fh, stderr=subprocess.STDOUT,
+                                **detached_kwargs())
     wall_start = None
     deadline = time.monotonic() + wait
     while time.monotonic() < deadline and proc.poll() is None:
-        if "Recording started" in log.read_text(errors="replace"):
+        if recording_started(log.read_text(errors="replace")):
             wall_start = time.time()
             break
         time.sleep(0.05)
     if proc.poll() is not None:
-        raise CaptureError(f"recordVideo exited: {log.read_text(errors='replace').strip()}")
+        raise CaptureError(f"the recording exited: {log.read_text(errors='replace').strip()}")
     state.write_json(rec_file, {"pid": proc.pid, "out": str(out), "wall_start": wall_start or time.time()})
     return proc.pid
 
@@ -58,7 +70,7 @@ def record_stop(udid: str, discard: bool = False) -> Path | None:
         return None
     pid, out = running["pid"], Path(running["out"])
     if is_alive(pid):
-        # SIGINT makes recordVideo write the file's index; without it the video can't be played.
+        # SIGINT makes the recorder write the file's index; without it the video can't be played.
         with contextlib.suppress(ProcessLookupError):
             os.killpg(pid, signal.SIGINT)
         deadline = time.monotonic() + 20

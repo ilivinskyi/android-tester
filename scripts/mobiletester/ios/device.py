@@ -1,4 +1,7 @@
-"""One simulator as idt sees it: facts for reports, observations of the screen, the app under test.
+"""One simulator or real device as idt sees it: facts for reports, observations of the screen, the app under test.
+
+Simulators are managed through simctl, real devices through devicectl; `Device.tool` is whichever applies, and
+both modules offer the same app functions (apps, app_info, install, uninstall, launch, terminate).
 
 Which app to observe: the given one, else the session's app, else the app idt last launched; when it is not
 in the foreground, SpringBoard (home screen, system alerts). XCUITest only sees an app it is asked about by
@@ -8,6 +11,7 @@ bundle id.
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -15,7 +19,7 @@ from pathlib import Path
 from ..core import annotate, session, state
 from ..core.fingerprint import screen_fingerprint
 from ..core.ui import Bounds, Element, Snapshot
-from . import hierarchy, simctl
+from . import devicectl, hierarchy, simctl
 from .hierarchy import Key, Keyboard
 from .runner import APP_STATES, FOREGROUND, SPRINGBOARD, Runner
 
@@ -24,12 +28,25 @@ NAVIGATION = "back by left-edge swipe or the app's back button"
 
 @dataclass
 class Device:
-    sim: simctl.Simulator
+    found: simctl.Simulator | devicectl.PhysicalDevice
     runner: Runner
 
     @property
     def udid(self) -> str:
-        return self.sim.udid
+        return self.found.udid
+
+    @property
+    def name(self) -> str:
+        return self.found.name
+
+    @property
+    def physical(self) -> bool:
+        return isinstance(self.found, devicectl.PhysicalDevice)
+
+    @property
+    def tool(self):
+        """simctl for a simulator, devicectl for a real device."""
+        return devicectl if self.physical else simctl
 
     def facts(self, refresh: bool = False) -> dict:
         """Screen size in points and scale, cached per simulator (they don't change while it runs)."""
@@ -38,7 +55,8 @@ class Device:
         if cached is None:
             info = self.runner.info()
             cached = {"screen": info["screen"], "scale": info["scale"], "os": info["os_version"],
-                      "language": info.get("language", "")}
+                      "language": info.get("language", ""), "languages": info.get("languages", []),
+                      "locale": info.get("locale", "")}
             state.write_json(path, cached)
         return cached
 
@@ -60,23 +78,71 @@ class Device:
         return SPRINGBOARD, None
 
 
+def choose(sims: list[simctl.Simulator], phones: list[devicectl.PhysicalDevice], wanted: str | None):
+    """The simulator or device to work with.
+
+    By UDID or name: a booted simulator or a ready device. Without one: the only booted simulator or
+    USB-connected ready device. A device on Wi-Fi is never chosen implicitly: it may be someone's phone in the
+    next room, and plugging it in (or naming it) is how the user says "this one".
+    """
+    if wanted:
+        by_id = [d for d in phones if wanted in (d.udid, d.identifier)] or [s for s in sims if s.udid == wanted]
+        matches = by_id or [d for d in phones if d.name == wanted] + [s for s in sims if s.name == wanted]
+        if len(matches) > 1:
+            listing = ", ".join(f"{m.name} ({m.udid}, {m.kind})" for m in matches)
+            raise simctl.DeviceError(f"several devices are called '{wanted}' ({listing}): pass the UDID")
+        if not matches:
+            raise simctl.DeviceError(f"no simulator or device named or with UDID '{wanted}' (see `idt devices`)")
+        found = matches[0]
+        if isinstance(found, devicectl.PhysicalDevice):
+            return devicectl.require_ready(found)
+        return simctl.pick([found], wanted)
+    candidates = [s for s in sims if s.booted] + [d for d in phones if d.ready and d.transport == "wired"]
+    if len(candidates) == 1:
+        return candidates[0]
+    if candidates:
+        listing = ", ".join(f"{c.name} ({c.udid}, {c.kind})" for c in candidates)
+        raise simctl.DeviceError(f"several simulators or devices are ready ({listing}): pass -s UDID")
+    wireless = [d for d in phones if d.reachable]
+    hint = ("; on Wi-Fi: " + ", ".join(f"{d.name} ({d.udid}, {d.state})" for d in wireless)
+            + " - pass -s UDID to use one") if wireless else ""
+    raise simctl.DeviceError("no booted simulator or USB-connected device: boot a simulator with `xcrun simctl boot "
+                             f"\"iPhone 17\"` (names in `idt devices`), or connect a device by cable{hint}")
+
+
+def find(wanted: str | None) -> Device:
+    """The Device for -s / IDT_UDID, or the only one ready."""
+    with ThreadPoolExecutor(max_workers=1) as pool:  # devicectl takes about a second; ask both at once
+        phones = pool.submit(devicectl.list_devices)
+        found = choose(simctl.list_devices(), phones.result(), wanted)
+    physical = isinstance(found, devicectl.PhysicalDevice)
+    return Device(found, Runner(found.udid, physical=physical))
+
+
 def device_props(dev: Device) -> dict:
     """The device block of session.json, in the report's neutral keys."""
     facts = dev.facts(refresh=True)
-    languages = simctl.languages(dev.udid)
+    if dev.physical:
+        # The runner reads them on the device; the owner's name for it stays out of reports.
+        model, languages, locale = dev.found.model, facts.get("languages", []), facts.get("locale", "")
+    else:
+        model, languages, locale = dev.name, simctl.languages(dev.udid), simctl.locale(dev.udid)
     w, h = facts["screen"]
-    return {
+    props = {
         "platform": "iOS",
         "udid": dev.udid,
-        "model": dev.sim.name,
+        "model": model,
         "os": f"iOS {facts['os']}",
-        "kind": "simulator",
+        "kind": dev.found.kind,
         "screen": f"{round(w)}x{round(h)} pt @{round(facts['scale'])}x",
         "navigation": NAVIGATION,
         "keyboard": f"iOS keyboard ({languages[0] if languages else facts.get('language', '?')})",
-        "locale": simctl.locale(dev.udid),
+        "locale": locale,
         "languages": languages,
     }
+    if dev.physical:
+        props["connection"] = "USB" if dev.found.transport == "wired" else "Wi-Fi"
+    return props
 
 
 @dataclass

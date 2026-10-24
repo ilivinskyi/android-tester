@@ -104,6 +104,7 @@ def device_facts(dev: dict) -> dict[str, str]:
         "os": os_,
         "screen": screen,
         "kind": dev.get("kind") or ("emulator" if dev.get("emulator") else "physical"),
+        "personal": bool(dev.get("personal")),
         "navigation": navigation,
         "keyboard": keyboard_name(dev["keyboard"]) if dev.get("keyboard") else "",
         "locale": dev.get("locale", ""),
@@ -130,7 +131,7 @@ def environment(session: dict) -> list[tuple[str, str]]:
          + (f" ({app['versionCode']})" if app.get("versionCode") else "")),
         ("Install source", app.get("install_source")),
         ("Device", _joined(facts["model"], facts["os"], facts["screen"]) if dev else None),
-        ("Device kind", facts.get("kind")),
+        ("Device kind", facts.get("kind", "") + (", personal" if facts.get("personal") else "")),
         ("Navigation and keyboard", _joined(facts["navigation"], facts["keyboard"]) if dev else None),
         ("Locale", dev.get("locale")),
         ("Input", session.get("input")),
@@ -143,6 +144,8 @@ def environment_line(session: dict) -> str:
     facts = device_facts(session.get("device") or {}) or {"kind": "?"}
     app = session.get("app") or {}
     kind = "physical device" if facts["kind"] == "physical" else facts["kind"]
+    if facts.get("personal"):
+        kind = f"personal {kind}"
     device = _joined(facts.get("short_model") or "?", facts.get("os") or "?", kind, facts.get("navigation", ""),
                      f"keyboard {facts['keyboard']}" if facts.get("keyboard") else "",
                      f"locale {facts['locale']}" if facts.get("locale") else "")

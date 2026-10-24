@@ -23,7 +23,7 @@ Ask:
 2. For each device ask: a short name, and whether it is a **personal** device.
    Personal devices get stricter guardrails: no system-setting changes, no clearing app data, no installing builds without asking.
    Simulators and emulators are never personal.
-3. Record the device id (Android serial, iOS simulator UDID), name, platform, kind (physical, emulator or simulator), personal, navigation and keyboard.
+3. Record the device id (Android serial, iOS simulator or device UDID), name, platform, kind (physical, emulator or simulator), personal, navigation and keyboard.
    Android: if the keyboard isn't Gboard, warn that on-screen typing may need the fallback (see `keyboard_fallback` in auto mode).
 
 ## 3. App profiles

@@ -29,26 +29,27 @@ from ..core.commands import (
     NeedsDecision,
     NotFound,
 )
-from . import capture, crash, device, entry_script, keyboard, runner, simctl
+from . import capture, crash, device, devicectl, entry_script, keyboard, runner, signing, simctl
 from .device import Device
 from .human import Driver
 from .runner import Runner, RunnerError
 from .simctl import DeviceError, SimctlError
 
 MODES = ["explore", "test-case", "repro", "ui-review", "retest", "memory"]
+DEVICE_LOG_LIMIT = ("streaming the app's log from a real device is not supported yet; crash reports are, "
+                    "with `idt crashes`")
 
 
 # --- helpers ---------------------------------------------------------------------------------
 
 def _device(args) -> Device:
-    sim = simctl.find(args.udid or os.environ.get("IDT_UDID"))
-    return Device(sim, Runner(sim.udid))
+    return device.find(args.udid or os.environ.get("IDT_UDID"))
 
 
 def _ready(dev: Device) -> Device:
-    """UI commands need the runner; start it on demand (about 15 s, once per simulator boot)."""
+    """UI commands need the runner; start it on demand (about 15 s on a simulator, longer on a device)."""
     if not dev.runner.alive():
-        print(f"starting the runner on {dev.sim.name}: {dev.runner.start()}")
+        print(f"starting the runner on {dev.name}: {dev.runner.start()}")
     return dev
 
 
@@ -172,7 +173,26 @@ def _guard(dev: Device, el: ui.Element | None, allow_reason: str | None, action:
     _approval_log(dev, {"action": action, "element": el.describe(), "risk": el.risk, "approval": allow_reason})
 
 
-# --- commands without a simulator ------------------------------------------------------------
+def _personal(dev: Device) -> bool:
+    """A real device counts as personal unless the inventory says it isn't; simulators never are."""
+    if not dev.physical:
+        return False
+    entry = project.device_entry(dev.udid)
+    return bool(entry.get("personal", True)) if entry else True
+
+
+def _guard_personal(dev: Device, args, action: str) -> None:
+    """Changing what is installed on someone's own phone, or wiping an app's data there, needs their yes."""
+    if not _personal(dev):
+        return
+    approval = getattr(args, "allow_risk", None)
+    if not approval:
+        raise Blocked(f"BLOCKED: {action} on {dev.name}, a personal device. Stop and ask the user. If they approve, "
+                      "rerun with --allow-risk \"<their approval>\".")
+    _approval_log(dev, {"action": action, "device": dev.udid, "risk": "personal device", "approval": approval})
+
+
+# --- commands without a device ---------------------------------------------------------------
 
 def cmd_doctor(args) -> int:
     ok = True
@@ -189,35 +209,68 @@ def cmd_doctor(args) -> int:
         print(f"{tool}: {shutil.which(tool) or 'not on PATH'}")
     try:
         runner.xctestrun(build=False)
-        print("runner: built")
+        print("runner (simulator): built")
     except RunnerError:
-        print("runner: not built yet (`idt runner build`, about a minute, once per Xcode version)")
+        print("runner (simulator): not built yet (`idt runner build`, about a minute, once per Xcode version)")
     booted = [s for s in simctl.list_devices() if s.booted]
-    if not booted:
-        print("simulators: none booted (`xcrun simctl boot \"iPhone 17\"`, names in `idt devices`)")
-        ok = False
     for sim in booted:
         alive = Runner(sim.udid).alive()
         print(f"simulator: {sim.udid} {sim.name} {sim.runtime} booted, runner {'running' if alive else 'stopped'}")
+    phones = devicectl.list_devices()
+    team = signing.team()
+    if phones:
+        print(f"signing team for devices: {team or 'not set (ask the user for it, then `idt runner build --team ID`)'}")
+    for phone in phones:
+        _doctor_device(phone, team)
+    if not booted and not any(p.ready for p in phones):
+        print("simulators: none booted (`xcrun simctl boot \"iPhone 17\"`, names in `idt devices`); "
+              "devices: none ready")
+        ok = False
     return EXIT_OK if ok else EXIT_DEVICE
 
 
+def _doctor_device(phone: devicectl.PhysicalDevice, team: str | None) -> None:
+    via = "USB" if phone.transport == "wired" else "Wi-Fi" if phone.transport == "localNetwork" else phone.transport
+    print(f"device: {phone.udid} {phone.model} \"{phone.name}\" {phone.runtime} via {via}: {phone.state}")
+    if problem := phone.problem():
+        print(f"  to do: {problem}")
+        return
+    if team:
+        try:
+            runner.xctestrun(build=False, device=phone.udid, team=team)
+            built = "built"
+        except RunnerError:
+            built = f"not built yet (`idt -s {phone.udid} runner build`)"
+        alive = Runner(phone.udid, physical=True).alive()
+        print(f"  runner: {built}, {'running' if alive else 'stopped'}")
+    print("  on the device, once: Settings > Developer > Enable UI Automation; keep it unlocked while testing")
+
+
 def cmd_devices(args) -> int:
-    sims = simctl.list_devices()
+    sims, phones = simctl.list_devices(), devicectl.list_devices()
     if args.json:
-        print(json.dumps([s.__dict__ for s in sims]))
+        print(json.dumps([{**s.__dict__, "kind": s.kind} for s in [*phones, *sims]]))
         return EXIT_OK
+    for p in phones:
+        print(f"{p.udid}\t{p.state}\tphysical\t{p.model} \"{p.name}\"\t{p.runtime}\t"
+              f"{'USB' if p.transport == 'wired' else 'Wi-Fi'}")
     for s in sorted(sims, key=lambda s: (not s.booted, s.runtime, s.name)):
         print(f"{s.udid}\t{s.state}\tsimulator\t{s.name}\t{s.runtime}")
-    return EXIT_OK if sims else EXIT_DEVICE
+    return EXIT_OK if sims or phones else EXIT_DEVICE
 
 
-# --- commands on a simulator -----------------------------------------------------------------
+# --- commands on a device --------------------------------------------------------------------
 
 def cmd_runner(args, dev: Device) -> int:
     match args.runner_cmd:
         case "build":
-            print(f"runner built: {runner.xctestrun()}")
+            if not dev.physical:
+                print(f"runner built: {runner.xctestrun()}")
+                return EXIT_OK
+            # The team is the user's answer, saved for the next builds; never guessed.
+            team = signing.save_team(args.team) if args.team else signing.team()
+            print(f"building the runner for {dev.name} signed by team {team or '?'} (about a minute)...")
+            print(f"runner built: {runner.xctestrun(device=dev.udid, team=team)}")
         case "start":
             print(dev.runner.start())
         case "stop":
@@ -278,8 +331,12 @@ def cmd_type(args, dev: Device) -> int:
     try:
         outcome = driver.type_text(args.text, submit=args.submit)
     except keyboard.CannotType as exc:
-        raise NeedsDecision(f"{exc}. Ask the user how to continue (they may type it on the simulator).") from exc
+        raise NeedsDecision(f"{exc}. Ask the user how to continue (they may type it on the "
+                            f"{'device' if dev.physical else 'simulator'}).") from exc
     except keyboard.NoKeyboard as exc:
+        if dev.physical:
+            raise NeedsDecision(f"{exc}. A hardware keyboard connected to the device hides the on-screen one: "
+                                "ask the user to disconnect it.") from exc
         raise NeedsDecision(f"{exc}. In Simulator.app, I/O > Keyboard > Toggle Software Keyboard (cmd-K) shows it "
                             "while the Mac keyboard is connected.") from exc
     # Never echo the text: it may be a credential from the secrets file.
@@ -338,6 +395,21 @@ def cmd_wait(args, dev: Device) -> int:
         time.sleep(0.5)
 
 
+def _check_build(app: Path, dev: Device) -> None:
+    """A simulator runs builds made for it and a device builds signed for it: catch a mix-up before installing."""
+    if app.suffix == ".ipa":
+        raise ValueError("unzip the .ipa and install the .app inside it (Payload/<name>.app)" if dev.physical else
+                         ".ipa files are for real devices; a simulator needs the .app built for it "
+                         "(xcodebuild -sdk iphonesimulator)")
+    platforms = simctl.info_plist(app).get("CFBundleSupportedPlatforms", [])
+    if dev.physical and "iPhoneSimulator" in platforms:
+        raise ValueError(f"{app.name} is a simulator build; a device needs a build signed for it (xcodebuild -sdk "
+                         "iphoneos with the team's signing)")
+    if not dev.physical and "iPhoneOS" in platforms:
+        raise ValueError(f"{app.name} is a device build; a simulator needs the .app built for it "
+                         "(xcodebuild -sdk iphonesimulator)")
+
+
 def _installed_app(dev: Device, bundle_id: str) -> Path | None:
     """The .app idt last installed for this bundle id: what clear-data reinstalls."""
     known = (state.read_json(state.device_dir(dev.udid) / "installs.json") or {}).get(bundle_id)
@@ -347,35 +419,35 @@ def _installed_app(dev: Device, bundle_id: str) -> Path | None:
 def cmd_app(args, dev: Device) -> int:
     match args.app_cmd:
         case "launch":
-            pid = simctl.launch(dev.udid, args.package)
+            pid = dev.tool.launch(dev.udid, args.package)
             dev.remember_app(args.package)
             session.log_action(dev.udid, {"action": "app-launch", "mode": "setup", "package": args.package})
             print(f"launched {args.package} (pid {pid})")
             _after(dev, args)
         case "stop":
-            was = simctl.terminate(dev.udid, args.package)
+            was = dev.tool.terminate(dev.udid, args.package)
             session.log_action(dev.udid, {"action": "app-stop", "mode": "setup", "package": args.package})
             print(f"stopped {args.package}" if was else f"{args.package} was not running")
         case "reset":
             return _app_reset(args, dev)
         case "install":
             app = Path(args.app).resolve()
-            if app.suffix == ".ipa":
-                raise ValueError(".ipa files are for real devices; a simulator needs the .app built for it "
-                                 "(xcodebuild -sdk iphonesimulator)")
+            _check_build(app, dev)
+            _guard_personal(dev, args, f"installing {app.name}")
             facts = simctl.bundle_of(app)
-            simctl.install(dev.udid, app)
+            dev.tool.install(dev.udid, app)
             installs = state.device_dir(dev.udid) / "installs.json"
             state.write_json(installs, {**(state.read_json(installs) or {}), facts["package"]: str(app)})
             session.log_action(dev.udid, {"action": "app-install", "mode": "setup", "file": app.name})
             print(f"installed {facts['package']} {facts['versionName']} ({facts['versionCode']}) from {app}")
         case "uninstall":
-            simctl.uninstall(dev.udid, args.package)
+            _guard_personal(dev, args, f"uninstalling {args.package}")
+            dev.tool.uninstall(dev.udid, args.package)
             print(f"uninstalled {args.package}")
         case "info":
-            print(json.dumps(simctl.app_info(dev.udid, args.package), indent=1))
+            print(json.dumps(dev.tool.app_info(dev.udid, args.package), indent=1))
         case "list":
-            for bundle, info in sorted(simctl.apps(dev.udid).items()):
+            for bundle, info in sorted(dev.tool.apps(dev.udid).items()):
                 if info.get("ApplicationType") == "System" and not args.all:
                     continue
                 if args.filter.casefold() in (bundle + info.get("CFBundleName", "")).casefold():
@@ -395,17 +467,18 @@ def cmd_app(args, dev: Device) -> int:
 def _app_reset(args, dev: Device) -> int:
     started = datetime.now().astimezone()
     steps = []
-    if simctl.terminate(dev.udid, args.package):
+    if dev.tool.terminate(dev.udid, args.package):
         steps.append("terminate")
     if args.level == "clear-data":
+        _guard_personal(dev, args, f"clearing {args.package}'s data (uninstall and reinstall)")
         app = _installed_app(dev, args.package)
         if app is None:
             raise NotFound(f"clear-data reinstalls the app, but idt doesn't know where {args.package}'s .app is: "
                            "install it once with `idt app install PATH` (built-in apps can't be reset this way)")
-        simctl.uninstall(dev.udid, args.package)
-        simctl.install(dev.udid, app)
+        dev.tool.uninstall(dev.udid, args.package)
+        dev.tool.install(dev.udid, app)
         steps += ["uninstall", "install"]
-    simctl.launch(dev.udid, args.package)
+    dev.tool.launch(dev.udid, args.package)
     dev.remember_app(args.package)
     steps.append("launch")
     _ready(dev)
@@ -426,7 +499,7 @@ def _app_reset(args, dev: Device) -> int:
 def _app_find(args, dev: Device) -> int:
     query = args.query.casefold()
     scored = []
-    for bundle, info in simctl.apps(dev.udid).items():
+    for bundle, info in dev.tool.apps(dev.udid).items():
         names = [n for n in (info.get("CFBundleDisplayName"), info.get("CFBundleName")) if n]
         haystack = [bundle.casefold(), *(n.casefold() for n in names)]
         score = 100 if query in haystack else 85 if any(h.startswith(query) for h in haystack) else \
@@ -452,6 +525,8 @@ def _app_find(args, dev: Device) -> int:
 def cmd_log(args, dev: Device) -> int:
     match args.log_cmd:
         case "start":
+            if dev.physical:
+                raise ValueError(DEVICE_LOG_LIMIT)
             process = args.process or simctl.app_info(dev.udid, args.package)["executable"]
             pid = capture.log_start(dev.udid, process, Path(args.out))
             print(f"app log ({process}) -> {Path(args.out).resolve()} (pid {pid})")
@@ -465,9 +540,10 @@ def cmd_crashes(args, dev: Device) -> int:
     bundle = args.package or session.package(dev.udid) or dev.last_app()
     if not bundle:
         raise ValueError("pass --package BUNDLE (no session or launched app known)")
-    executable = simctl.app_info(dev.udid, bundle)["executable"]
+    executable = dev.tool.app_info(dev.udid, bundle)["executable"]
     since = args.since if args.since is not None else _session_start(dev)
-    reports = crash.find(executable, bundle, since)
+    directory = crash.sync_device(dev.udid, executable) if dev.physical else None
+    reports = crash.find(executable, bundle, since, directory)
     if not reports:
         print(f"no crash reports of {bundle} since {datetime.fromtimestamp(since):%Y-%m-%d %H:%M:%S}")
     for path in reports:
@@ -486,7 +562,7 @@ def _session_start(dev: Device) -> float:
 def cmd_record(args, dev: Device) -> int:
     match args.rec_cmd:
         case "start":
-            pid = capture.record_start(dev.udid, Path(args.out))
+            pid = capture.record_start(dev.udid, Path(args.out), physical=dev.physical)
             print(f"recording -> {Path(args.out).resolve()} (pid {pid})")
         case "stop":
             path = capture.record_stop(dev.udid, discard=args.discard)
@@ -501,7 +577,7 @@ def cmd_clip(args, dev: Device) -> int:
     else:
         run = session.latest_run_dir(dev.udid)
         if run is None:
-            raise NotFound("no session recording known for this simulator; pass --video PATH")
+            raise NotFound("no session recording known for this device; pass --video PATH")
         video = run / "videos" / "session.mp4"
     start, end = clip.cut_clip(video, commands.parse_time(args.start), commands.parse_time(args.end), Path(args.out),
                                args.pad)
@@ -513,6 +589,11 @@ def cmd_session(args, dev: Device) -> int:
     match args.session_cmd:
         case "start":
             props = device.device_props(_ready(dev))
+            if dev.physical:
+                props["personal"] = _personal(dev)
+                if not project.device_entry(dev.udid):
+                    print("note: this device is not in the device inventory (config.yaml), so it counts as personal: "
+                          "no data clearing, installs or system settings without asking")
             meta = {
                 "mode": args.mode, "charter": args.charter, "ticket": args.ticket, "package": args.package,
                 "platform": "iOS", "device": props,
@@ -520,7 +601,8 @@ def cmd_session(args, dev: Device) -> int:
             }
             if args.package:
                 try:
-                    meta["app"] = simctl.app_info(dev.udid, args.package)
+                    meta["app"] = dev.tool.app_info(dev.udid, args.package)
+                    meta["app"].pop("bundle_path", None)
                 except SimctlError:
                     meta["app"] = {"package": args.package, "installed": False}
             directory = Path(args.dir) if args.dir else project.default_run_dir(args.package, args.mode, args.ticket)
@@ -529,11 +611,13 @@ def cmd_session(args, dev: Device) -> int:
             directory = session.start(dev.udid, directory, meta, defaults)
             (state.device_dir(dev.udid) / "crash_watch.json").unlink(missing_ok=True)
             started = []
-            if args.log and args.package and meta["app"].get("executable"):
+            if args.log and dev.physical:
+                print(f"note: no app log: {DEVICE_LOG_LIMIT}")
+            elif args.log and args.package and meta["app"].get("executable"):
                 capture.log_start(dev.udid, meta["app"]["executable"], directory / "logs" / "app.log")
                 started.append("app log")
             if args.record:
-                capture.record_start(dev.udid, directory / "videos" / "session.mp4")
+                capture.record_start(dev.udid, directory / "videos" / "session.mp4", physical=dev.physical)
                 started.append("recording")
             active = session.active(dev.udid)
             active["started_capture"] = started
@@ -599,7 +683,8 @@ def _global_flags(parser: argparse.ArgumentParser, suppress: bool) -> None:
         return argparse.SUPPRESS if suppress else value
 
     parser.add_argument("-s", "--udid", default=default(None),
-                        help="simulator UDID or name (default: IDT_UDID or the only booted simulator)")
+                        help="simulator or device UDID or name (default: IDT_UDID, else the only booted simulator "
+                             "or USB-connected device)")
     parser.add_argument("--fast", action="store_true", default=default(False),
                         help="no pacing or checks: ONLY for setup/reset steps, never for the test itself")
     parser.add_argument("--pace", choices=["human", "slow"], default=default(os.environ.get("MT_PACE", "human")))
@@ -608,20 +693,24 @@ def _global_flags(parser: argparse.ArgumentParser, suppress: bool) -> None:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="idt", description="iOS device tool for agent-driven testing (simulators)")
+    parser = argparse.ArgumentParser(prog="idt", description="iOS device tool for agent-driven testing (simulators "
+                                                              "and real devices)")
     _global_flags(parser, suppress=False)
     common = argparse.ArgumentParser(add_help=False)
     _global_flags(common, suppress=True)
     sub = commands.subparsers(parser, common, dest="cmd", required=True)
 
-    sub.add_parser("doctor", help="check Xcode, the runner and booted simulators")
-    p = sub.add_parser("devices", help="list simulators")
+    sub.add_parser("doctor", help="check Xcode, the runner, booted simulators and connected devices")
+    p = sub.add_parser("devices", help="list real devices and simulators")
     p.add_argument("--json", action="store_true")
-    p = sub.add_parser("runner", help="the XCUITest runner that drives the simulator (started on demand)")
+    p = sub.add_parser("runner", help="the XCUITest runner that drives the simulator or device (started on demand)")
     run = commands.subparsers(p, common, dest="runner_cmd", required=True)
-    for name in ("build", "start", "stop", "status"):
+    rp = run.add_parser("build", help="build the runner (for a real device: signed by the user's team)")
+    rp.add_argument("--team", help="the user's Apple development team id, remembered for later builds (ask the "
+                                   "user; never guess)")
+    for name in ("start", "stop", "status"):
         run.add_parser(name)
-    p = sub.add_parser("info", help="simulator facts for reports (model, iOS, screen, keyboard, locale)")
+    p = sub.add_parser("info", help="device facts for reports (model, iOS, kind, screen, keyboard, locale)")
     p.add_argument("--json", action="store_true")
 
     p = sub.add_parser("observe", help="read the screen: elements + screenshot with numbered boxes")
@@ -676,17 +765,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("app", help="app management (setup operations)")
     app = commands.subparsers(p, common, dest="app_cmd", required=True)
+    personal_help = "the user's approval, needed on a personal device"
     for name in ("launch", "stop", "uninstall", "info"):
         ap = app.add_parser(name)
         ap.add_argument("package", help="bundle id")
         if name == "launch":
             _add_settle(ap, observe=False)
+        if name == "uninstall":
+            ap.add_argument("--allow-risk", metavar="APPROVAL", help=personal_help)
     ap = app.add_parser("reset", help="known start state: terminate, reinstall (clear-data), launch, wait")
     ap.add_argument("package")
     ap.add_argument("--level", choices=["restart", "clear-data"], default="restart",
                     help="restart keeps the app's data; clear-data reinstalls the .app idt installed last")
-    ap = app.add_parser("install", help="install a simulator .app")
+    ap.add_argument("--allow-risk", metavar="APPROVAL", help=personal_help + " for clear-data")
+    ap = app.add_parser("install", help="install a .app (a simulator build, or a signed device build)")
     ap.add_argument("app")
+    ap.add_argument("--allow-risk", metavar="APPROVAL", help=personal_help)
     ap = app.add_parser("list")
     ap.add_argument("filter", nargs="?", default="")
     ap.add_argument("--all", action="store_true", help="include built-in apps")
@@ -696,7 +790,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--limit", type=int, default=8)
     ap.add_argument("--json", action="store_true")
 
-    p = sub.add_parser("log", help="stream the app's unified log into a file")
+    p = sub.add_parser("log", help="stream the app's unified log into a file (simulators only)")
     log = commands.subparsers(p, common, dest="log_cmd", required=True)
     lp = log.add_parser("start")
     lp.add_argument("--out", required=True)
@@ -709,7 +803,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--package", help="default: the session's app")
     p.add_argument("--since", type=float, help="epoch seconds (default: the session start)")
 
-    p = sub.add_parser("record", help="screen recording of the simulator")
+    p = sub.add_parser("record", help="screen recording of the simulator or device")
     rec = commands.subparsers(p, common, dest="rec_cmd", required=True)
     rp = rec.add_parser("start")
     rp.add_argument("--out", required=True, help="target .mp4")
@@ -733,7 +827,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--charter")
     sp.add_argument("--ticket")
     sp.add_argument("--record", action="store_true", help="record the screen to videos/session.mp4")
-    sp.add_argument("--log", action="store_true", help="stream the app's log to logs/app.log")
+    sp.add_argument("--log", action="store_true", help="stream the app's log to logs/app.log (simulators only)")
     sp = ses.add_parser("end", help="stop capture and build the report (when report check passes)")
     sp.add_argument("--discard-video", action="store_true")
     sp.add_argument("--no-report", action="store_true", help="don't build the report now")
@@ -772,7 +866,7 @@ def main(argv: list[str] | None = None) -> int:
     except Blocked as exc:
         print(exc, file=sys.stderr)
         return EXIT_BLOCKED
-    except NeedsDecision as exc:
+    except (NeedsDecision, signing.MissingTeam) as exc:
         print(f"DECISION NEEDED: {exc}", file=sys.stderr)
         return EXIT_DECISION
     except (NotFound, LookupError) as exc:

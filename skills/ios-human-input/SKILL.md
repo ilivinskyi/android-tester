@@ -1,6 +1,6 @@
 ---
 name: ios-human-input
-description: Use when tapping, typing, swiping, scrolling, going back or home, or launching apps on an iOS simulator during testing, bug reproduction, or evidence recording - any time UI input is sent to an iPhone or iPad simulator.
+description: Use when tapping, typing, swiping, scrolling, going back or home, or launching apps on an iOS simulator or a real iPhone or iPad during testing, bug reproduction, or evidence recording - any time UI input is sent to an iPhone or iPad.
 ---
 
 # Human-like iOS input
@@ -23,12 +23,12 @@ Bugs found that way may not exist for real users, and bugs real users hit may ne
 2. `--fast` is only for setup and reset: installing, resetting, getting to the start state, deleting leftovers. Never for the steps under test or a bug's repro steps. Mark fast steps in `session.json` (`setup_steps_fast`).
 3. Go back the way an iPhone user does: `idt key back` is the left-edge swipe. When it says the swipe didn't change the screen (the app turned the gesture off, or a sheet is open), tap the app's own back or close button, or swipe a sheet down. iOS has no system back key, so never report "back does nothing" without saying which of these you tried.
 4. Type with `idt type`. It types on the on-screen keyboard; when it exits with code 6 (`DECISION NEEDED`), ask the user. A character on no key (accents need a long press, other scripts need another keyboard) is a decision, not something to paste.
-5. If the on-screen keyboard doesn't appear, the simulator uses the Mac's keyboard: ask the user to toggle the software keyboard (Simulator.app, I/O > Keyboard, cmd-K). Never type through the Mac keyboard during a test.
+5. If the on-screen keyboard doesn't appear, a hardware keyboard is in use: on a simulator ask the user to toggle the software keyboard (Simulator.app, I/O > Keyboard, cmd-K), on a device to disconnect the keyboard. Never type through the Mac keyboard during a test.
 6. After every action, read the warnings. "no visible change" means the action may not have landed: observe before the next step, and never count that step as done.
 7. Keep a person's rhythm: one action, look at the result, next action. Don't chain blind actions without checking.
 8. A tap on a row goes to a random point near its center, as a finger would. Rows with small controls inside (check marks, toggles drawn as images) can take that tap: when the result is not what the row should do, observe and say which part was hit. If the inner control isn't in the element list, that itself is an accessibility finding.
 9. Prefer `idt observe --image-only` during bug reproduction; full observes read the UI through the accessibility layer.
-10. A bug that reproduces only through automation is **Unconfirmed** until a person reproduces it by hand (on the simulator: clicking in Simulator.app). Offer the manual-repro protocol (repro mode); report automated and manual N of M separately.
+10. A bug that reproduces only through automation is **Unconfirmed** until a person reproduces it by hand (on a simulator: clicking in Simulator.app; on a device: with their own fingers). Offer the manual-repro protocol (repro mode); report automated and manual N of M separately.
 11. Every claim needs its raw source: read the saved tree JSON, the app log, the crash report or the screenshot that proves it before writing a finding.
 
 ## Rationalizations

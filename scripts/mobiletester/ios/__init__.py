@@ -1,4 +1,4 @@
-"""idt - iOS device tool used by the mobile-tester skills (simulators; real devices later)."""
+"""idt - iOS device tool used by the mobile-tester skills (simulators and real devices)."""
 
 from pathlib import Path
 

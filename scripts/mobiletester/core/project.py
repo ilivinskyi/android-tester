@@ -41,6 +41,12 @@ def tester(start: Path | None = None) -> str | None:
     return (config.get("tester") or {}).get("name") or None
 
 
+def device_entry(device_id: str, start: Path | None = None) -> dict | None:
+    """The device inventory's entry for this serial or UDID (kind, personal, name), if onboarding recorded it."""
+    config, _ = load(start)
+    return next((d for d in config.get("devices") or [] if str(d.get("id", "")) == device_id), None)
+
+
 def app_name(root: Path, package: str) -> str:
     """The profile's app name, or the last part of the package id."""
     profile = root / PROJECT_DIR / "apps" / package / "profile.yaml"

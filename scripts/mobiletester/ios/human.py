@@ -17,10 +17,13 @@ from ..core.ui import Bounds
 from . import crash, keyboard
 from .device import Device, read_screen
 from .hierarchy import Key
-from .simctl import SimctlError, app_info
+from .runner import RunnerError
+from .simctl import SimctlError
 
 CRASH_COMMAND = "idt crashes"
 REACTION_S = 0.3
+# A device writes the crash report a few seconds after the app dies; look this long after it stopped running.
+DEVICE_CRASH_WINDOW_S = 20
 
 
 class Driver:
@@ -83,14 +86,39 @@ class Driver:
         executable = seen.get("executable") if seen.get("bundle") == bundle else None
         if executable is None:
             try:
-                executable = app_info(self.dev.udid, bundle)["executable"]
+                executable = self.dev.tool.app_info(self.dev.udid, bundle)["executable"]
             except SimctlError:
                 return None
         since = seen.get("since") or time.time() - 2
-        reports = crash.find(executable, bundle, since)
-        state.write_json(marker, {"bundle": bundle, "executable": executable,
-                                  "since": max([since, *(p.stat().st_mtime for p in reports)])})
+        watch = {"bundle": bundle, "executable": executable, "since": since}
+        directory = None
+        if self.dev.physical:
+            directory, watch["down_since"] = self._device_reports(bundle, executable, seen.get("down_since"))
+            if directory is None:
+                state.write_json(marker, watch)
+                return None
+        reports = crash.find(executable, bundle, since, directory)
+        watch["since"] = max([since, *(p.stat().st_mtime for p in reports)])
+        state.write_json(marker, watch)
         return crash.summary(reports[-1]) if reports else None
+
+    def _device_reports(self, bundle: str, executable: str, down_since: float | None) -> tuple:
+        """(local copy of the device's crash reports or None when there's no need to look, when the app was
+        first seen not running). Listing them is a round trip to the device, and a crashed app isn't running,
+        so only look while the app has been down for less than DEVICE_CRASH_WINDOW_S."""
+        try:
+            running = self.runner.app(bundle, "state") >= 2
+        except RunnerError:
+            running = False
+        if running:
+            return None, None
+        down_since = down_since or time.time()
+        if time.time() - down_since > DEVICE_CRASH_WINDOW_S:
+            return None, down_since
+        try:
+            return crash.sync_device(self.dev.udid, executable), down_since
+        except SimctlError:
+            return None, down_since
 
     # --- actions ---------------------------------------------------------------------------------
 
