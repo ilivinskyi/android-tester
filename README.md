@@ -1,13 +1,18 @@
-# Android Tester for Claude Code
+# Mobile Tester for Claude Code
 
-**Let Claude test your Android app on a real phone or emulator, the way a person would, and hand you a QA report you can act on.**
+**Let Claude test your Android or iOS app the way a person would, on a real Android phone, an emulator or an iOS simulator, and hand you a QA report you can act on.**
 
-`/android-native-tester` runs exploratory testing, written test cases, bug reproduction and UI/accessibility reviews on any Android app.
-It drives the device with human-like input, checks every step, records evidence, and ends each session with a standard report and Jira-ready bug drafts.
+`/android-native-tester` and `/ios-native-tester` run exploratory testing, written test cases, bug reproduction and UI/accessibility reviews on any Android or iOS app.
+They drive the device with human-like input, check every step, record evidence, and end each session with the same standard report and Jira-ready bug drafts.
 
 ```
 /android-native-tester explore com.example.app
 ```
+```
+/ios-native-tester explore com.example.app
+```
+
+iOS support is new: it works on simulators (real iPhones come later), and has no performance or memory measurements yet.
 
 ## Why this exists
 
@@ -67,17 +72,31 @@ flowchart TD
     D --> C
     C -->|adb| P["Phone or emulator"]
     C --> R["reports/&lt;date&gt;-&lt;app&gt;-&lt;mode&gt;/<br/>index.html, bugs/*.md, findings.json"]
+    I["/ios-native-tester"] --> J["ios-native-tester skill"]
+    J --> K["ios-human-input + ios-device skills"]
+    K --> L["idt CLI (Python)"]
+    L -->|XCUITest runner| M["iOS simulator"]
+    L --> R
+    A --> S["mobile-tester-shared<br/>onboarding, interview, modes, report standard"]
+    J --> S
 ```
+
+Both CLIs share one core: the report, the finding lifecycle, sessions, guardrails and the screen model.
 
 | Skill | Starts | Purpose |
 |---|---|---|
 | `android-native-tester` | When you type `/android-native-tester`, or ask in plain words to test an app ("explore the Notes app for 15 minutes") | Onboarding on first use, the session interview, a session in one of six modes, the standard report |
 | `android-human-input` | Automatically, whenever a device is driven | The rules for human-like input and honest reproduction |
 | `android-device` | Automatically | Reference for the `adt` command-line tool that does the device work |
+| `ios-native-tester` | When you type `/ios-native-tester`, or ask to test an app on iOS | The same session flow on an iOS simulator (five modes; memory is Android only for now) |
+| `ios-human-input` | Automatically, whenever a simulator is driven | Human-like input on iOS: held touches, the left-edge back swipe, typing key by key |
+| `ios-device` | Automatically | Reference for the `idt` command-line tool |
+| `mobile-tester-shared` | Never on its own | Onboarding, interview, modes, auto mode, report standard and templates used by both testers |
 
 ## Requirements
 
 - An agent that supports [Agent Skills](https://agentskills.io): [Claude Code](https://code.claude.com) (as a plugin), or Codex, OpenCode, pi and others (see "Install in other agents").
+- For iOS: a Mac with Xcode (simulators come with it), plus uv and ffmpeg as below. The Android tools are not needed for iOS, and the other way round.
 - Android SDK Platform-Tools (`adb`).
 - [uv](https://docs.astral.sh/uv/), which runs the bundled Python tool with its dependencies; no manual Python setup.
 - `ffmpeg` and `ffprobe` for joining recordings and cutting bug clips.
@@ -139,6 +158,24 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 Some brands need their own USB driver on Windows (for example Samsung's; Pixel phones use the Google USB Driver from Android Studio's SDK Manager).
 An emulator from Android Studio works too and is the better choice for tests that change system settings (font size, dark mode, rotation).
 
+## Prepare an iOS simulator
+
+1. Install Xcode from the App Store, open it once to finish setup, then check the command line tools:
+   ```bash
+   xcode-select -p
+   ```
+2. Boot a simulator (names: `xcrun simctl list devices`) and open the Simulator app to watch it:
+   ```bash
+   xcrun simctl boot "iPhone 17"
+   ```
+   ```bash
+   open -a Simulator
+   ```
+3. The app under test must be a simulator build (`.app`, built with `xcodebuild -sdk iphonesimulator`); App Store apps and `.ipa` files don't run on simulators. Built-in apps such as Reminders and Contacts are always there.
+4. If the on-screen keyboard doesn't show when a text field is tapped, turn it on in Simulator: I/O > Keyboard > Toggle Software Keyboard (cmd-K). The tester types on it key by key.
+
+The first `idt` command that touches the screen builds the XCUITest runner (about a minute, once per Xcode version) and starts it (about 15 seconds per simulator boot).
+
 ## Install in Claude Code
 
 Inside Claude Code:
@@ -147,13 +184,13 @@ Inside Claude Code:
 /plugin marketplace add ilivinskyi/android-tester
 ```
 ```
-/plugin install android-tester@android-tester
+/plugin install mobile-tester@mobile-tester
 ```
 
 On Claude Code 2.1.275 or later, one step does both:
 
 ```
-/plugin install android-tester --marketplace ilivinskyi/android-tester
+/plugin install mobile-tester --marketplace ilivinskyi/android-tester
 ```
 
 Or from a terminal:
@@ -162,11 +199,11 @@ Or from a terminal:
 claude plugin marketplace add ilivinskyi/android-tester
 ```
 ```bash
-claude plugin install android-tester@android-tester
+claude plugin install mobile-tester@mobile-tester
 ```
 
 Start a new session afterwards.
-Typing `/` should now list `android-native-tester`.
+Typing `/` should now list `android-native-tester` and `ios-native-tester`.
 
 To try it without installing, clone the repo and load it for one session:
 
@@ -180,15 +217,15 @@ claude --plugin-dir ./android-tester
 ## Install in other agents
 
 The skills follow the open [Agent Skills](https://agentskills.io) format, so any agent that reads `SKILL.md` folders can use them: Codex, OpenCode, pi, and Claude Code without the plugin.
-Two parts: the `adt` command the skills call, and the three skill folders.
+Two parts: the `adt` and `idt` commands the skills call, and the skill folders.
 
-1. Install `adt` as a command (needs [uv](https://docs.astral.sh/uv/)):
+1. Install `adt` and `idt` as commands (needs [uv](https://docs.astral.sh/uv/)):
 
    ```bash
    uv tool install git+https://github.com/ilivinskyi/android-tester
    ```
 
-   Check it with `adt doctor`.
+   Check it with `adt doctor` (Android) or `idt doctor` (iOS).
 
 2. Get the skills:
 
@@ -224,7 +261,7 @@ These folders change between agent versions; check your agent's skills documenta
 To update later:
 
 ```bash
-uv tool upgrade android-tester
+uv tool upgrade mobile-tester
 ```
 ```bash
 git -C ~/android-tester pull
@@ -241,11 +278,12 @@ Open Claude Code in a folder where reports and settings should live (for example
 /android-native-tester
 ```
 
+For an iOS app, run `/ios-native-tester` instead; everything below works the same, with a simulator in place of the phone.
 Asking in plain words works too ("test the Notes app on my phone, 15 minutes"): the request loads the same skill, with your config and auto mode.
 
 1. **Onboarding (first time only).**
    Your name for reports, the reports folder, an optional Jira project, your devices (and which one is personal), an app profile with a description of your app in your own words, whether to report problems noticed outside a session's scope (and which unfinished areas to never report), and whether to use auto mode.
-   Everything is saved in `.android-tester/` so later sessions start straight away.
+   Everything is saved in `.mobile-tester/` so later sessions start straight away; one setup serves both platforms.
 2. **Session interview.**
    Which app (type its name as on your phone, or its package id; Claude finds it on the device and lets you pick when several match) or build file, a ticket or context, the mode, the charter, the device, the time box, and what evidence to collect.
    The skill sums it up as a plan and waits for your go.
@@ -264,17 +302,18 @@ Asking in plain words works too ("test the Notes app on my phone, 15 minutes"): 
 | `repro` | `/android-native-tester repro PROJ-123` | Reproduces a reported bug, narrows the trigger one variable at a time, confirms with a person |
 | `ui-review` | `/android-native-tester ui-review com.example.app` | Accessibility (touch targets, labels, contrast, screen-reader text) and visual review |
 | `retest` | `/android-native-tester retest com.example.app` | Runs the regression test cases of the app's open known issues on a new build and marks each Fixed, Still reproduces or Can't verify |
-| `memory` | `/android-native-tester memory com.example.app` | Repeats flows and watches live Activities, Views and memory per cycle to find leaks |
+| `memory` | `/android-native-tester memory com.example.app` | Repeats flows and watches live Activities, Views and memory per cycle to find leaks (Android only for now) |
 
-In every mode, the app's own log is checked after each action (errors, caught exceptions, network failures, out of memory), and memory is sampled every 10 actions; both end up in the report.
+On Android, the app's own log is checked after each action (errors, caught exceptions, network failures, out of memory), and memory is sampled every 10 actions; both end up in the report.
+On iOS, the app's unified log is recorded with the session and every action checks for a new crash report.
 
 ### After the session
 
-- **Confirm findings by hand.** Tell Claude "B3 reproduced 2 of 2 on my phone" (or run `adt report confirm`): the finding gets a history entry, its manual count and status update, and the report is rebuilt.
+- **Confirm findings by hand.** Tell Claude "B3 reproduced 2 of 2 on my phone" (or run `adt report confirm` / `idt report confirm`): the finding gets a history entry, its manual count and status update, and the report is rebuilt.
 - **Known issues.** Every bug lands in the app's known-issues registry with a regression test case draft. Later sessions link a known bug found again ("K-3 seen again") instead of reporting it as new, and reopen fixed issues that come back.
-- **Crashes and performance.** A crash is caught at the action that caused it. Each session records cold start time, janky frames and memory, so a slower build shows up in the report.
+- **Crashes and performance.** A crash is caught at the action that caused it. On Android each session also records cold start time, janky frames and memory, so a slower build shows up in the report.
 
-If the short name clashes with another command, use the namespaced form `/android-tester:android-native-tester`.
+If the short name clashes with another command, use the namespaced form `/mobile-tester:android-native-tester` or `/mobile-tester:ios-native-tester`.
 
 ## What a session produces
 
@@ -286,24 +325,26 @@ reports/2026-10-23-myapp-explore/
   findings.csv      every bug and accessibility finding, for Jira's CSV import
   findings.json     machine-readable findings
   session.json      device, app, ticket, charter, timing, environment
-  screenshots/      evidence, with the UI hierarchy XML next to each screenshot
+  screenshots/      evidence, with the UI tree (Android XML, iOS JSON) next to each screenshot
   videos/           session.mp4 plus one clip per bug
-  logs/             actions.jsonl (every action, timed), logcat.txt, decisions.md
+  logs/             actions.jsonl (every action, timed), logcat.txt (Android) or app.log (iOS), decisions.md
 ```
 
 Each finding has an id, title, type (bug, accessibility, observation), severity (Blocker to Trivial), suggested priority (P1-P4), status (Confirmed, Unconfirmed, Retracted), preconditions, steps, expected and actual results, reproducibility (automated and manual N of M) and evidence.
-`adt report check` rejects incomplete or misleading data, for example a Major bug marked Confirmed when only automation reproduced it.
+The report is the same on both platforms; only the device facts in it differ (for example "Pixel 7a, Android 15 (API 35)" or "iPhone 17, iOS 27.0, simulator").
+`adt report check` / `idt report check` rejects incomplete or misleading data, for example a Major bug marked Confirmed when only automation reproduced it.
 
 ## Project configuration
 
 Onboarding writes this into the folder you test from:
 
 ```
-.android-tester/
+.mobile-tester/
   config.yaml                 tester, reports, Jira, device inventory, auto mode
-  apps/<package>/
+  state/                      per-device state of adt and idt (not for git)
+  apps/<package or bundle id>/
     profile.yaml              what the app is and how it works (about), store URL, expected signer,
-                              login method, reset strategy, hooks, risky areas
+                              login method, reset strategy, hooks, risky areas, platform
     notes.md                  what testers learn over time: screen map, quirks, known issues
     hooks/  checks/           your setup, reset, teardown and login scripts and custom checks
     known-issues.json         bugs found across sessions, their status and where they were seen
@@ -311,7 +352,7 @@ Onboarding writes this into the folder you test from:
     secrets.local.yaml        test credentials, filled in by you (keep it out of git)
 ```
 
-Add `.adt/` and `.android-tester/**/secrets.local.yaml` to your `.gitignore`; onboarding offers to do it.
+Add `.mobile-tester/state/` and `.mobile-tester/**/secrets.local.yaml` to your `.gitignore`; onboarding offers to do it.
 
 ## Human-like input in detail
 
@@ -323,6 +364,8 @@ Add `.adt/` and `.android-tester/**/secrets.local.yaml` to your `.gitignore`; on
 | Notices when nothing happened | Never | Compares the screen before and after, warns on "no visible change" |
 | Swipes back from the edge (gesture navigation) | `KEYCODE_BACK` | Edge swipe in gesture mode, the navigation-bar key in 3-button mode |
 | Types on the keyboard, with autocorrect | `input text` pastes past the keyboard | Taps the keyboard's own keys, including shift and symbol layers |
+
+On iOS, `idt` does the same through its XCUITest runner: held touches at a random uncovered point, the same pacing and change check, back as the left-edge swipe (iOS has no system back key), and typing key by key on the on-screen keyboard, including shift and the number and symbol layers.
 
 `--fast` switches back to instant input for setup steps only (installing, resetting data, getting to the start state), and every fast step is marked in the report.
 
@@ -343,9 +386,9 @@ These always stop the session and ask, even in auto mode:
 
 The CLI also refuses to tap elements labelled like payment, messaging or account-destroying actions until you approve that one action.
 
-## The `adt` command-line tool
+## The `adt` and `idt` command-line tools
 
-The skills drive everything through `adt`, a small Python tool in `scripts/`.
+The skills drive everything through `adt` (Android) and `idt` (iOS), two small Python tools in `scripts/` with the same command names where the platforms allow.
 Installed as a command (see "Install in other agents"):
 
 ```bash
@@ -361,6 +404,15 @@ uv run --script scripts/adt.py doctor
 It covers device facts, observing the screen (hierarchy plus annotated screenshot), human-like actions, app management, APK inspection, sessions, recording, clips, logcat, hooks and reports.
 See [skills/android-device/reference.md](skills/android-device/reference.md) for every command.
 
+`idt` works the same way:
+
+```bash
+uv run --script scripts/idt.py doctor
+```
+
+It covers simulators, the XCUITest runner, observing (element tree plus annotated screenshot), human-like actions, app install and reset, sessions, recording, clips, the app log, crash reports, hooks and reports.
+See [skills/ios-device/reference.md](skills/ios-device/reference.md) for every command.
+
 ## Limitations
 
 - On-screen typing is tuned for Gboard with English key names; other keyboards and languages fall back to per-character key events (or ask).
@@ -368,6 +420,8 @@ See [skills/android-device/reference.md](skills/android-device/reference.md) for
 - Screens protected with FLAG_SECURE (banking apps, DRM video) record and screenshot as black.
 - A UI that never goes idle (endless animation, video) can make the hierarchy dump fail; the tool falls back to screenshots.
 - Inputs injected over adb come from a virtual input device, so a bug that only automation reproduces stays Unconfirmed until a person reproduces it. That's deliberate.
+- iOS: simulators only; no performance, memory or leak checks yet; each key press takes about half a second because XCUITest waits for the app to go idle; accented letters (long press) and other keyboard languages stop and ask.
+- iOS: an app only shows in `idt observe` when `idt` knows its bundle id (the session's app, the last launched one, or `--app`).
 
 ## Development
 
@@ -382,7 +436,8 @@ claude plugin validate .
 ```
 
 The design decisions are in [docs/spec.md](docs/spec.md).
-The tests use real UI dumps captured from devices as fixtures.
+The tests use real UI dumps captured from devices and simulators as fixtures.
+The iOS runner is an Xcode project in `scripts/mobiletester/ios/runner/`; `idt runner build` builds it into `~/Library/Caches/mobile-tester`.
 
 ## License
 
