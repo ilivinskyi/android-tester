@@ -22,6 +22,8 @@ SCROLLABLE = {"ScrollView", "Table", "CollectionView"}
 CHECKABLE = {"Switch", "Toggle", "CheckBox"}
 # Plain content worth listing when it has a label; containers (Other, Window, Toolbar...) only as leaves.
 TEXTUAL = {"StaticText", "Image", "Alert"}
+# The status bar's height on notched and Dynamic Island iPhones; titles start below it.
+STATUS_BAR_PT = 54
 # Navigation bars, tab bars and toolbars are drawn above the scroll view that extends under them.
 BARS = {"NavigationBar", "TabBar", "Toolbar"}
 ON_TOP = 1_000_000
@@ -187,6 +189,10 @@ def _keys(keyboard: dict, screen: Bounds) -> list[Key]:
 
 
 def screen_title(snapshot: Snapshot) -> str:
-    """A stand-in for Android's Activity name in screen fingerprints: the topmost static title, if any."""
-    texts = [e for e in snapshot.elements if e.cls == "StaticText" and e.bounds.top < snapshot.screen.height * 0.2]
+    """A stand-in for Android's Activity name in screen fingerprints: the topmost static title, if any.
+
+    The status bar (clock, carrier) is above STATUS_BAR_PT and changes on its own, so it never counts.
+    """
+    texts = [e for e in snapshot.elements if e.cls == "StaticText"
+             and STATUS_BAR_PT <= e.bounds.top < snapshot.screen.height * 0.2]
     return min(texts, key=lambda e: e.bounds.top).label if texts else ""

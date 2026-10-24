@@ -94,3 +94,13 @@ def test_navigation_bar_buttons_are_above_the_list_scrolling_under_them():
     add = ui.find_by_text(snap, "Add")[0]
     assert ui.visible_point(snap, add, (keyboard.area,)) is not None
     assert ui.element_at(snap, *add.bounds.center) is add
+
+
+def test_status_bar_clock_is_not_a_screen_title():
+    data = {"tree": {"type": "Application", "frame": [0, 0, 402, 874], "children": [
+        {"type": "Window", "frame": [0, 0, 402, 874], "children": [
+            {"type": "StaticText", "label": "09:06", "frame": [40, 14, 50, 22]},
+            {"type": "StaticText", "label": "Settings", "frame": [16, 100, 120, 40]}]}]}}
+    snap, _ = hierarchy.parse(data)
+    assert hierarchy.screen_title(snap) == "Settings"
+    assert hierarchy.screen_title(_load("ios_habits_list.json")[0]) == "Habits"
