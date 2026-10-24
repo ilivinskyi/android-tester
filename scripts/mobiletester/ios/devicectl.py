@@ -64,6 +64,7 @@ class PhysicalDevice:
     paired: bool
     developer_mode: bool | None  # None: the device didn't say
     ddi: bool | None             # developer disk image services mounted
+    capabilities: frozenset[str] = frozenset()  # CoreDevice feature ids, e.g. "...feature.capturescreenshot"
 
     kind = "physical"
 
@@ -75,6 +76,11 @@ class PhysicalDevice:
     def ready(self) -> bool:
         """Paired, in reach and in Developer Mode: what the runner and devicectl's app commands need."""
         return self.reachable and self.developer_mode is True
+
+    @property
+    def can_record(self) -> bool:
+        """Whether CoreDevice offers screen recording for this device (not every iPhone does)."""
+        return "com.apple.coredevice.feature.screenrecording" in self.capabilities
 
     @property
     def runtime(self) -> str:
@@ -137,6 +143,7 @@ def parse_devices(result: dict) -> list[PhysicalDevice]:
             paired=connection.get("pairingState") == "paired",
             developer_mode=_developer_mode(state, legacy),
             ddi=ddi if isinstance(ddi, bool) else None,
+            capabilities=frozenset(c.get("featureIdentifier", "") for c in entry.get("capabilities") or []),
         ))
     return devices
 
@@ -258,14 +265,14 @@ def terminate(udid: str, bundle_id: str) -> bool:
 # --- crash logs ------------------------------------------------------------------------------
 
 def parse_files(result: dict) -> list[str]:
-    """Relative paths from `device info files` (one entry per file, folders too)."""
+    """Relative paths of the files from `device info files` (which lists folders too)."""
     names = []
     for entry in result.get("files", []):
         if isinstance(entry, str):
             names.append(entry)
             continue
-        name = entry.get("relativePath") or entry.get("path") or entry.get("name")
-        if name and entry.get("type", "file") not in ("directory", "folder"):
+        name = entry.get("relativePath") or entry.get("name")
+        if name and not (entry.get("resources") or {}).get("isDirectory"):
             names.append(name)
     return names
 

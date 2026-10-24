@@ -1,8 +1,11 @@
 """Background evidence: screen recording, and on a simulator the app's unified log.
 
 `simctl io recordVideo` (simulator) and `devicectl device capture screen-record` (device) write one file for
-the whole session and finish it on SIGINT. Each says so once frames flow; that moment is the video's
-wall-clock start, so clips can be cut by action-log times (core/clip.py).
+the whole session and finish it on SIGINT. simctl says "Recording started" once frames flow; that moment is the
+video's wall-clock start, so clips can be cut by action-log times (core/clip.py). devicectl prints no such
+line, so a device recording counts as started once it has run for DEVICE_START_S without an error. Not every
+device offers recording through CoreDevice (an iPhone 15 Pro Max with iOS 27 doesn't): see
+PhysicalDevice.can_record.
 """
 
 from __future__ import annotations
@@ -35,9 +38,13 @@ def _record_command(udid: str, out: Path, physical: bool) -> list[str]:
     return [xcrun(), "simctl", "io", udid, "recordVideo", "--codec=h264", "--force", str(out)]
 
 
-def recording_started(output: str) -> bool:
-    """simctl prints 'Recording started'; devicectl reports that it is recording."""
-    return any(marker in output for marker in ("Recording started", "Recording...", "recording"))
+DEVICE_START_S = 2.0
+
+
+def recording_started(output: str, physical: bool = False, running_for: float = 0.0) -> bool:
+    if physical:
+        return running_for >= DEVICE_START_S and "ERROR" not in output
+    return "Recording started" in output
 
 
 def record_start(udid: str, out: Path, wait: float = 10.0, physical: bool = False) -> int:
@@ -51,10 +58,11 @@ def record_start(udid: str, out: Path, wait: float = 10.0, physical: bool = Fals
         proc = subprocess.Popen(_record_command(udid, out, physical), stdout=fh, stderr=subprocess.STDOUT,
                                 **detached_kwargs())
     wall_start = None
-    deadline = time.monotonic() + wait
-    while time.monotonic() < deadline and proc.poll() is None:
-        if recording_started(log.read_text(errors="replace")):
-            wall_start = time.time()
+    launched = time.monotonic()
+    while time.monotonic() < launched + wait and proc.poll() is None:
+        if recording_started(log.read_text(errors="replace"), physical, time.monotonic() - launched):
+            # A device recording starts when devicectl connects, a moment before it is detected.
+            wall_start = time.time() - (DEVICE_START_S if physical else 0)
             break
         time.sleep(0.05)
     if proc.poll() is not None:
@@ -82,9 +90,10 @@ def record_stop(udid: str, discard: bool = False) -> Path | None:
     if discard:
         out.unlink(missing_ok=True)
         return None
-    if out.is_file():
-        timeline = build_timeline([(running["wall_start"], duration(out))])
-        state.write_json(out.with_suffix(".timeline.json"), {"chunks": timeline})
+    if not out.is_file():
+        return None  # the recorder failed and wrote nothing
+    timeline = build_timeline([(running["wall_start"], duration(out))])
+    state.write_json(out.with_suffix(".timeline.json"), {"chunks": timeline})
     return out
 
 

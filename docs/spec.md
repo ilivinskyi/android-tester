@@ -5,7 +5,7 @@ Decisions from the initial interview (2026-10-23), revised after the Jumbo sessi
 ## Scope
 
 - Target: any APK / store app on Android; on iOS any simulator build, and on a real device any installed app or signed build; black-box (no source access assumed).
-- Devices: Android phones over USB and emulators; iOS simulators, and real iPhones and iPads over USB or Wi-Fi (not yet tried on hardware).
+- Devices: Android phones over USB and emulators; iOS simulators, and real iPhones and iPads over USB or Wi-Fi (first tried on an iPhone 15 Pro Max (iOS 27.0.1, USB) on 2026-10-24; Wi-Fi not yet tried).
 - Packaging: Claude Code plugin `mobile-tester` (this repo, still named android-tester on GitHub), skills in the open Agent Skills format.
 - iOS design and decisions: [superpowers/specs/2026-10-24-mobile-tester-design.md](superpowers/specs/2026-10-24-mobile-tester-design.md).
 
@@ -132,18 +132,24 @@ Modes of `android-native-tester` (guides in its folder, not separate skills): ex
 - The team id is the user's answer, never guessed; Xcode's signed-in teams are shown as hints; it is remembered per Mac.
 - devicectl has no port forward.
   While xcodebuild runs the test, CoreDevice keeps an IPv6 tunnel to the device (a utun on the Mac); `devicectl device info details` gives the device's `tunnelIPAddress`, new for every tunnel.
-  The runner listens on all IPv6 addresses but admits only connections from unique local addresses over a non-Wi-Fi, non-cellular, non-Ethernet, non-loopback interface, so nothing on the network can drive the device.
+  The runner listens on all IPv6 addresses but admits only connections from unique local addresses (fc00::/7) on a tunnel interface (`utun`).
+  An interface-type filter doesn't work: iOS reports a tunnel over USB as wired Ethernet, the same type as USB networking itself.
+  Every request also carries a random token that idt passes to the runner at each start (on simulators too), so nothing else that reaches the port can drive the device.
   idt follows the address when the tunnel comes back with a new one.
 - Without `-s`, only a USB-connected ready device is chosen implicitly; a device on Wi-Fi may be someone's phone in the next room.
 - Crash watch on a device: only when the app has stopped running (the runner says so cheaply), for 20 s, it copies the app's new `.ips` files from `systemCrashLogs` with the crash's own time as their modification time.
-- Recording: `devicectl device capture screen-record`, stopped with SIGINT like simctl's.
+- Recording: `devicectl device capture screen-record`, stopped with SIGINT like simctl's, only on devices whose CoreDevice capabilities list `screenrecording`.
+  An iPhone 15 Pro Max with iOS 27 doesn't, so its sessions have screenshots but no video.
+- Key names follow the device's region ("spatie" for space in the Netherlands) and the return key is named after the field's action ("search"); the space, delete and return keys are found by their identifiers, which don't change.
+- Typing: Apple's keyboard only. A third-party keyboard (Grammarly) is recognised (a window with `Key` elements but no `Keyboard`, its frames restarting at (0, 0) inside the hosting view) so it stays out of the element list, but its keys don't say which case they type, so `type` stops with a decision.
 - Guardrails: a real device is personal unless the inventory says `personal: false`; install, uninstall and clear-data are blocked there until `--allow-risk` carries the user's approval; `session.json` records `kind: physical` and `personal`, and the report shows them.
-- Not yet on devices: the app's unified log.
+- Not yet on devices: the app's unified log, video on devices without CoreDevice recording, typing on third-party keyboards.
 
 ## Open work
 
 - Not yet verified on Android after the split: Show taps (`adt touches`), memory mode, and APK inspection or install on a real phone (an emulator session on Contacts covered the rest on 2026-10-24).
 - Test-case documentation of the plugin's own steps in `docs/testcases/`, grouped by functionality.
-- iOS: verify real-device support on a device (whether tunnel connections pass the runner's filter, and the devicectl output formats for the process list, the crash-log list and the screen-record start message).
+- iOS: on a device, verify a device over Wi-Fi, a crash caught by the crash watch, and recording on a device that offers it.
+- iOS: video on devices without CoreDevice recording (for example from the runner's screenshots).
 - iOS: app log streaming on devices, performance and memory checks, `.ipa` inspection.
 - Planned for both platforms: an exploration coverage map from screen fingerprints, a selector cache for test cases, a monkey/stress mode.

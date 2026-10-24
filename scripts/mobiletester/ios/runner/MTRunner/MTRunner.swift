@@ -3,7 +3,8 @@
 // idt starts it with `xcodebuild test-without-building`. The simulator shares the Mac's network, so the
 // server on 127.0.0.1:<port> inside the simulator is reachable from idt. On a real device idt connects through
 // CoreDevice's tunnel (MT_RUNNER_BIND=tunnel): the server then accepts only connections that come through a
-// tunnel, never over Wi-Fi, cellular or USB networking directly. Every XCUITest call has to run on the main
+// tunnel interface, never over Wi-Fi, cellular or USB networking directly. Either way every request must carry
+// the token idt started it with (MT_RUNNER_TOKEN), so nothing else that can reach the port can drive the device. Every XCUITest call has to run on the main
 // thread: the network thread hands each request to the main queue, and the test keeps the main run loop
 // spinning until /shutdown.
 
@@ -18,7 +19,8 @@ final class MTRunner: XCTestCase {
     func testServe() throws {
         let env = ProcessInfo.processInfo.environment
         let port = UInt16(env["MT_RUNNER_PORT"] ?? "") ?? 22087
-        let server = try HTTPServer(port: port, tunnelOnly: env["MT_RUNNER_BIND"] == "tunnel", handler: Handler())
+        let server = try HTTPServer(port: port, tunnelOnly: env["MT_RUNNER_BIND"] == "tunnel",
+                                    token: env["MT_RUNNER_TOKEN"] ?? "", handler: Handler())
         server.start()
         while !server.stopped {
             RunLoop.current.run(mode: .default, before: Date(timeIntervalSinceNow: 0.1))
@@ -32,6 +34,7 @@ struct Request {
     let method: String
     let path: String
     let body: [String: Any]
+    var token = ""
 }
 
 struct Response {
@@ -244,23 +247,25 @@ final class HTTPServer {
     private let listener: NWListener
     private let handler: Handler
     private let tunnelOnly: Bool
+    private let token: String
     private let queue = DispatchQueue(label: "mtrunner.http")
     var stopped = false
 
-    init(port: UInt16, tunnelOnly: Bool, handler: Handler) throws {
+    init(port: UInt16, tunnelOnly: Bool, token: String, handler: Handler) throws {
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
         let endpointPort = NWEndpoint.Port(rawValue: port)!
         if tunnelOnly {
             // The tunnel's address changes with every connection, so listen on all IPv6 addresses and let only
-            // tunnel connections in (see admits).
-            parameters.prohibitedInterfaceTypes = [.wifi, .cellular, .wiredEthernet]
+            // tunnel connections in (see admits). No interface-type filter here: iOS reports a tunnel over USB as
+            // wired Ethernet, the same type as USB networking itself.
             parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: "::", port: endpointPort)
         } else {
             parameters.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: endpointPort)
         }
         listener = try NWListener(using: parameters)
         self.tunnelOnly = tunnelOnly
+        self.token = token
         self.handler = handler
     }
 
@@ -277,23 +282,27 @@ final class HTTPServer {
                 if HTTPServer.admits(connection) {
                     self.receive(connection, buffer: Data())
                 } else {
-                    NSLog("MTRunner refused a connection from \(connection.endpoint)")
+                    NSLog("MTRunner refused a connection from \(connection.endpoint) via "
+                          + "\(connection.currentPath?.availableInterfaces.map { "\($0.name):\($0.type)" } ?? [])")
                     connection.cancel()
                 }
             }
             connection.start(queue: self.queue)
         }
+        listener.stateUpdateHandler = { [weak self] state in
+            guard let self else { return }
+            NSLog("MTRunner listener \(state) on port \(self.listener.port?.rawValue ?? 0)\(self.tunnelOnly ? " (tunnel only)" : "")")
+        }
         listener.start(queue: queue)
-        NSLog("MTRunner listening on port \(listener.port?.rawValue ?? 0)\(tunnelOnly ? " (tunnel only)" : "")")
     }
 
     /// A connection through CoreDevice's tunnel: from a unique local IPv6 address (fc00::/7, which the
-    /// tunnel uses) over a virtual interface, not over Wi-Fi, cellular, USB networking or loopback.
+    /// tunnel uses) on a tunnel interface (utun), not on Wi-Fi (en0), cellular (pdp_ip) or USB networking.
     static func admits(_ connection: NWConnection) -> Bool {
         guard case let .hostPort(host, _) = connection.endpoint, case let .ipv6(address) = host,
               let first = address.rawValue.first, first & 0xFE == 0xFC else { return false }
-        guard let path = connection.currentPath else { return false }
-        return ![.wifi, .cellular, .wiredEthernet, .loopback].contains { path.usesInterfaceType($0) }
+        guard let interfaces = connection.currentPath?.availableInterfaces, !interfaces.isEmpty else { return false }
+        return interfaces.allSatisfy { $0.name.hasPrefix("utun") }
     }
 
     private func receive(_ connection: NWConnection, buffer: Data) {
@@ -303,7 +312,8 @@ final class HTTPServer {
             if let data { buffer.append(data) }
             if let request = HTTPServer.parse(buffer) {
                 DispatchQueue.main.async {
-                    let response = self.handler.handle(request, server: self)
+                    let response = request.token == self.token
+                        ? self.handler.handle(request, server: self) : .error("wrong or missing token", status: 401)
                     self.send(response, on: connection)
                 }
             } else if done || error != nil {
@@ -322,16 +332,21 @@ final class HTTPServer {
         let start = lines.first?.split(separator: " ") ?? []
         guard start.count >= 2 else { return Request(method: "BAD", path: "", body: [:]) }
         var length = 0
+        var token = ""
         for line in lines.dropFirst() {
             let parts = line.split(separator: ":", maxSplits: 1)
-            if parts.count == 2, parts[0].lowercased() == "content-length" {
-                length = Int(parts[1].trimmingCharacters(in: .whitespaces)) ?? 0
+            guard parts.count == 2 else { continue }
+            let value = parts[1].trimmingCharacters(in: .whitespaces)
+            switch parts[0].lowercased() {
+            case "content-length": length = Int(value) ?? 0
+            case "x-mt-token": token = value
+            default: break
             }
         }
         let bodyData = data[headerEnd.upperBound...]
         guard bodyData.count >= length else { return nil }
         let body = (try? JSONSerialization.jsonObject(with: Data(bodyData.prefix(length)))) as? [String: Any] ?? [:]
-        return Request(method: String(start[0]), path: String(start[1]), body: body)
+        return Request(method: String(start[0]), path: String(start[1]), body: body, token: token)
     }
 
     private func send(_ response: Response, on connection: NWConnection) {

@@ -198,6 +198,8 @@ class Driver:
 
     def _keys(self) -> list[Key]:
         _, kb, *_ = read_screen(self.dev)
+        if kb and kb.third_party:
+            raise keyboard.ThirdPartyKeyboard()
         return kb.keys if kb else []
 
     def _typist(self) -> keyboard.Typist:

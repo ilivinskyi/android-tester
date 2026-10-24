@@ -21,7 +21,7 @@ Use this skill on its own only for one-off tasks: a screenshot, checking what's 
 
 `idt` drives the simulator or device through MTRunner, a small XCUITest runner that ships with it.
 `idt` builds it once per Xcode version (`idt runner build`, about a minute) and starts it when a command needs it (about 15 s on a simulator, longer on a device); it then keeps running until the simulator shuts down, the device disconnects, or `idt runner stop`.
-On a real device the runner must be signed by the user's Apple development team, and `idt` reaches it through CoreDevice's tunnel to the device (USB or Wi-Fi); it accepts no connections from the network.
+On a real device the runner must be signed by the user's Apple development team, and `idt` reaches it through CoreDevice's tunnel to the device (USB or Wi-Fi); it accepts no connections from the network, and every request carries a token from `idt`.
 Coordinates are screen points (402x874 on an iPhone 17), not pixels.
 
 ## Before anything else
@@ -81,8 +81,12 @@ Exit codes: 4 not found or covered, 5 guardrail block, 6 decision needed (e.g. a
 
 ## Known limits
 
-- Real-device support is new and not yet tried on hardware: if a step fails in a way these instructions don't cover, tell the user what failed instead of working around it.
-- Real devices: no app log streaming yet (crash reports and recordings work); `.ipa` files must be unzipped to the `.app` inside first; a free personal team's runner build expires after 7 days.
+- Real-device support is new (tried on one iPhone over USB): if a step fails in a way these instructions don't cover, tell the user what failed instead of working around it.
+- Real devices: no app log streaming yet; crash reports work.
+  Video only where Xcode offers recording for the device (`note: no recording` at session start otherwise, e.g. on an iPhone 15 Pro Max): screenshots are the evidence then.
+  `.ipa` files must be unzipped to the `.app` inside first; a free personal team's runner build expires after 7 days.
+- Typing needs Apple's keyboard. With a third-party keyboard (Grammarly, Gboard, ...) `type` stops with `DECISION NEEDED`: ask the user to switch keyboards with the globe key, or to type the text themselves.
+- The guardrail classifier knows English labels only: on a Dutch app "Toevoegen aan mandje" (add to basket) is not marked `RISK`; judge such buttons yourself.
 - Over Wi-Fi a device is slower than over USB: every action takes screenshots through the tunnel.
 - Each key press takes about half a second (XCUITest waits for the app to go idle), so long texts type slowly.
 - Typing knows the keys on the letter, number and symbol layers; accented letters (long press) and other keyboard languages stop with a decision.

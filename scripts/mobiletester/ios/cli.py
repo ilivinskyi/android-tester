@@ -36,6 +36,8 @@ from .runner import Runner, RunnerError
 from .simctl import DeviceError, SimctlError
 
 MODES = ["explore", "test-case", "repro", "ui-review", "retest", "memory"]
+DEVICE_RECORD_LIMIT = ("this device doesn't offer screen recording through Xcode's CoreDevice; screenshots "
+                       "(`idt observe --name`) are the evidence")
 DEVICE_LOG_LIMIT = ("streaming the app's log from a real device is not supported yet; crash reports are, "
                     "with `idt crashes`")
 
@@ -333,6 +335,9 @@ def cmd_type(args, dev: Device) -> int:
     except keyboard.CannotType as exc:
         raise NeedsDecision(f"{exc}. Ask the user how to continue (they may type it on the "
                             f"{'device' if dev.physical else 'simulator'}).") from exc
+    except keyboard.ThirdPartyKeyboard as exc:
+        raise NeedsDecision(f"{exc}. Ask the user to switch to Apple's keyboard for the session (the globe key on "
+                            "the keyboard), or to type this text themselves.") from exc
     except keyboard.NoKeyboard as exc:
         if dev.physical:
             raise NeedsDecision(f"{exc}. A hardware keyboard connected to the device hides the on-screen one: "
@@ -562,6 +567,8 @@ def _session_start(dev: Device) -> float:
 def cmd_record(args, dev: Device) -> int:
     match args.rec_cmd:
         case "start":
+            if dev.physical and not dev.found.can_record:
+                raise capture.CaptureError(DEVICE_RECORD_LIMIT)
             pid = capture.record_start(dev.udid, Path(args.out), physical=dev.physical)
             print(f"recording -> {Path(args.out).resolve()} (pid {pid})")
         case "stop":
@@ -616,7 +623,9 @@ def cmd_session(args, dev: Device) -> int:
             elif args.log and args.package and meta["app"].get("executable"):
                 capture.log_start(dev.udid, meta["app"]["executable"], directory / "logs" / "app.log")
                 started.append("app log")
-            if args.record:
+            if args.record and dev.physical and not dev.found.can_record:
+                print(f"note: no recording: {DEVICE_RECORD_LIMIT}")
+            elif args.record:
                 capture.record_start(dev.udid, directory / "videos" / "session.mp4", physical=dev.physical)
                 started.append("recording")
             active = session.active(dev.udid)
@@ -630,7 +639,8 @@ def cmd_session(args, dev: Device) -> int:
                 return EXIT_OK
             started = active.get("started_capture", [])
             if "recording" in started:
-                print(f"recording: {capture.record_stop(dev.udid, discard=args.discard_video)}")
+                saved = capture.record_stop(dev.udid, discard=args.discard_video)
+                print(f"recording: {saved or ('discarded' if args.discard_video else 'none saved, see recording.log')}")
             if "app log" in started:
                 print(f"app log: {capture.log_stop(dev.udid)}")
             run = session.end(dev.udid)

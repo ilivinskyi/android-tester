@@ -4,6 +4,7 @@ It is built once per Xcode version and source change into ~/Library/Caches/mobil
 `xcodebuild test-without-building` in the background. Its HTTP server listens on a port derived from the
 UDID: on a simulator, which shares the Mac's network, at 127.0.0.1; on a real device at the device's end of
 CoreDevice's tunnel (see devicectl.py), and only there, so nobody else on the Wi-Fi can drive the device.
+Each start gets a random token that every request carries, so nothing else that reaches the port can use it.
 A device build is signed by the user's team (signing.py) and made for that device, so its provisioning
 profile includes it.
 """
@@ -13,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
 import shutil
 import signal
 import subprocess
@@ -179,8 +181,8 @@ class Runner:
 
     def _call(self, method: str, path: str, body: dict | None, timeout: float) -> dict | bytes:
         data = json.dumps(body or {}).encode() if method == "POST" else None
-        request = urllib.request.Request(self.url + path, data=data, method=method,
-                                         headers={"Content-Type": "application/json"})
+        headers = {"Content-Type": "application/json", "X-MT-Token": self._token()}
+        request = urllib.request.Request(self.url + path, data=data, method=method, headers=headers)
         try:
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 payload = response.read()
@@ -194,6 +196,9 @@ class Runner:
             cause = exc.reason if isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, OSError) else exc
             raise RunnerError(f"the runner is not reachable on {self.url} ({exc}); start it with "
                               "`idt runner start`") from cause
+
+    def _token(self) -> str:
+        return (state.read_json(self._state_file) or {}).get("token", "")
 
     def alive(self) -> bool:
         if self.physical:
@@ -215,7 +220,8 @@ class Runner:
         team = signing.team() if self.physical else None
         testrun = xctestrun(device=self.udid if self.physical else None, team=team)
         log = state.device_dir(self.udid) / "runner.log"
-        env = {**os.environ, "TEST_RUNNER_MT_RUNNER_PORT": str(self.port)}
+        token = secrets.token_urlsafe(24)
+        env = {**os.environ, "TEST_RUNNER_MT_RUNNER_PORT": str(self.port), "TEST_RUNNER_MT_RUNNER_TOKEN": token}
         if self.physical:
             env["TEST_RUNNER_MT_RUNNER_BIND"] = "tunnel"
         with log.open("wb") as fh:
@@ -223,7 +229,7 @@ class Runner:
                 [_xcodebuild(), "test-without-building", "-xctestrun", str(testrun), "-destination",
                  f"id={self.udid}"],
                 stdout=fh, stderr=subprocess.STDOUT, env=env, **detached_kwargs())
-        running = {"pid": proc.pid, "port": self.port, "log": str(log)}
+        running = {"pid": proc.pid, "port": self.port, "log": str(log), "token": token}
         state.write_json(self._state_file, running)
         # A device installs the runner over the cable or Wi-Fi first, and may wait for its screen to unlock.
         deadline = time.monotonic() + (timeout or (300 if self.physical else 180))

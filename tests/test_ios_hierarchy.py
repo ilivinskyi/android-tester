@@ -3,8 +3,11 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from mobiletester.core import ui
-from mobiletester.ios import hierarchy
+from mobiletester.core.ui import Bounds
+from mobiletester.ios import hierarchy, human, keyboard
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -104,3 +107,47 @@ def test_status_bar_clock_is_not_a_screen_title():
     snap, _ = hierarchy.parse(data)
     assert hierarchy.screen_title(snap) == "Settings"
     assert hierarchy.screen_title(_load("ios_habits_list.json")[0]) == "Habits"
+
+
+def _grammarly_tree() -> dict:
+    """The shape of a search screen with the Grammarly keyboard on an iPhone 15 Pro Max (iOS 27): its window has
+    Key elements but no Keyboard, and its frames restart at (0, 0) inside the view at y=586 that hosts it."""
+    def key(label, ident, x, y, w=37.3):
+        return {"type": "Key", "label": label, "identifier": ident, "frame": [x, y, w, 45.3]}
+
+    keys = [key("Q", "gr-kb-character-q", 3.7, 53), key("A", "gr-kb-character-a", 25, 109),
+            key("Shift", "gr-kb-shift", 3.7, 165, 50.3), key("Return", "gr-kb-return", 324.7, 221, 101.7)]
+    remote = {"type": "Other", "frame": [0, 0, 430, 271], "children": [
+        {"type": "Other", "identifier": "gr-keyboard-root-view", "frame": [0, 0, 430, 271], "children": [
+            {"type": "Button", "label": "Grammarly assistant.", "identifier": "gr-button-toppanel-gbutton",
+             "frame": [5, 4.7, 40, 40]},
+            {"type": "Other", "identifier": "gr-hit-keyboard-view", "frame": [0, 45, 430, 226], "children": keys},
+        ]},
+    ]}
+    app = {"type": "Window", "frame": [0, 0, 430, 932], "children": [
+        {"type": "SearchField", "label": "Welke boodschappen zoek je?", "frame": [52, 58, 326, 45]},
+    ]}
+    keyboard = {"type": "Window", "frame": [0, 0, 430, 932], "children": [
+        {"type": "Other", "frame": [0, 586, 430, 346], "children": [
+            {"type": "Other", "frame": [0, 586, 430, 271], "children": [remote]},
+        ]},
+    ]}
+    return {"tree": {"type": "Application", "frame": [0, 0, 430, 932], "children": [app, keyboard]}}
+
+
+def test_a_third_party_keyboard_is_found_and_moved_onto_the_screen():
+    snap, keyboard = hierarchy.parse(_grammarly_tree(), "com.jumbo.app")
+    assert [e.cls for e in snap.elements] == ["SearchField"]  # no Grammarly buttons among the app's elements
+    assert keyboard.third_party
+    assert keyboard.area == Bounds(0, 586, 430, 932)
+    q = next(k for k in keyboard.keys if k.label == "Q")
+    assert q.bounds == Bounds(4, 639, 41, 684)  # where the key is drawn in the screenshot
+    assert [k.label for k in keyboard.keys] == ["Q", "A", "Shift", "Return"]
+
+
+def test_typing_refuses_a_third_party_keyboard(monkeypatch):
+    monkeypatch.setattr(human, "read_screen", lambda dev: (None, hierarchy.parse(_grammarly_tree())[1]))
+    driver = human.Driver.__new__(human.Driver)
+    driver.dev = None
+    with pytest.raises(keyboard.ThirdPartyKeyboard):
+        driver._keys()

@@ -13,7 +13,7 @@ They drive the device with human-like input, check every step, record evidence, 
 ```
 
 iOS support is new: it works on simulators, and has no performance or memory measurements yet.
-Support for real iPhones and iPads is newer still and has not been tried on hardware yet.
+Support for real iPhones and iPads is newer still: so far it has run on one iPhone over USB.
 
 ## Why this exists
 
@@ -179,7 +179,7 @@ The first `idt` command that touches the screen builds the XCUITest runner (abou
 
 ## Prepare a real iPhone or iPad
 
-This support is new and has not been tried on a real device yet; expect rough edges and tell us what you hit.
+This support is new and has run on one iPhone over USB so far; expect rough edges and tell us what you hit.
 A real device runs the same XCUITest runner, signed with your Apple development team.
 Every step here is yours: the tester tells you what is missing (`idt doctor` prints a `to do:` line per device) and waits.
 
@@ -197,7 +197,7 @@ Every step here is yours: the tester tells you what is missing (`idt doctor` pri
    The team is remembered on this Mac.
 5. Keep the device unlocked while it is tested.
 
-idt reaches the runner through the encrypted tunnel Xcode's CoreDevice keeps to the device; the runner accepts no connections from the network.
+idt reaches the runner through the encrypted tunnel Xcode's CoreDevice keeps to the device; the runner accepts no connections from the network, and each request carries a token only idt knows.
 A real device counts as personal unless your device inventory says otherwise: installing, uninstalling and clearing an app's data there are refused until you approve them, and the report says the device is physical and personal.
 The app under test is whatever is installed on the device (App Store apps too), or a signed device build (`.app`, or the `.app` inside an `.ipa`).
 
@@ -446,7 +446,7 @@ See [skills/ios-device/reference.md](skills/ios-device/reference.md) for every c
 - A UI that never goes idle (endless animation, video) can make the hierarchy dump fail; the tool falls back to screenshots.
 - Inputs injected over adb come from a virtual input device, so a bug that only automation reproduces stays Unconfirmed until a person reproduces it. That's deliberate.
 - iOS: no performance, memory or leak checks yet; each key press takes about half a second because XCUITest waits for the app to go idle; accented letters (long press) and other keyboard languages stop and ask.
-- iOS real devices: no app log streaming yet (crash reports and recordings work); over Wi-Fi every step is slower than over USB.
+- iOS real devices: no app log streaming yet (crash reports work); video only where Xcode offers recording for the device (an iPhone 15 Pro Max doesn't); typing needs Apple's keyboard, not a third-party one; over Wi-Fi every step is slower than over USB.
 - iOS: an app only shows in `idt observe` when `idt` knows its bundle id (the session's app, the last launched one, or `--app`).
 
 ## Development

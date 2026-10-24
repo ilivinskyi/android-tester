@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from mobiletester.core import ui
 from mobiletester.ios import hierarchy, keyboard
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -81,3 +82,17 @@ def test_a_character_on_no_layer_stops_with_how_much_was_typed():
 def test_no_keyboard():
     with pytest.raises(keyboard.NoKeyboard):
         keyboard.Typist(lambda: [], lambda key: None).type("a")
+
+
+def test_keys_named_in_the_device_language_are_found_by_identifier():
+    """An iPhone with region Netherlands: the space key says "spatie" and a search field's return key "search"."""
+    def key(label, identifier=""):
+        return hierarchy.Key(label, identifier, ui.Bounds(0, 0, 10, 10))
+
+    keys = [key("k"), key("a"), key("s"), key("spatie", "space"), key("search", "Search"), key("shift", "shift")]
+    pressed = []
+    typist = keyboard.Typist(lambda: keys, pressed.append)
+    typist.type("kaas kaas")
+    typist.press_named("return")
+    assert "".join(keyboard.types(k) for k in pressed) == "kaas kaas\n"
+    assert pressed[-1].identifier == "Search"

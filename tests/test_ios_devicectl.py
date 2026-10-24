@@ -118,13 +118,17 @@ def test_errors_read_coredevice_s_description_first():
 
 
 def test_crash_log_files_of_the_app_only():
+    def entry(path, directory=False):  # the shape devicectl 642 writes on an iPhone with iOS 27
+        return {"name": path.rsplit("/", 1)[-1], "relativePath": path, "metadata": {"size": 96},
+                "resources": {"isDirectory": directory, "isHidden": False, "isReadable": True}}
+
     listing = {"files": [
-        {"relativePath": "Habits-2026-10-24-091201.ips", "type": "file"},
-        {"relativePath": "Retired/Habits-2026-10-20-101010.ips"},
-        {"relativePath": "Retired", "type": "directory"},
-        {"relativePath": "HabitsWidget-2026-10-24-091201.ips"},
-        {"relativePath": "JetsamEvent-2026-10-24-091201.ips"},
-        "Habits-2026-10-24-091300.ips.synced",
+        entry("Habits-2026-10-24-091201.ips"),
+        entry("Retired/Habits-2026-10-20-101010.ips"),
+        entry("Retired", directory=True),
+        entry("HabitsWidget-2026-10-24-091201.ips"),
+        entry("JetsamEvent-2026-10-24-091201.ips"),
+        entry("Habits-2026-10-24-091300.ips.synced"),
     ]}
     names = devicectl.parse_files(listing)
     assert "Retired" not in names
@@ -161,6 +165,19 @@ def test_recording_command_and_start_marker_per_kind():
     assert "recordVideo" in capture._record_command("U", out, physical=False)
     assert capture.recording_started("Recording started")
     assert not capture.recording_started("")
+    # devicectl's error names the feature "Screen Recording": that must not count as started.
+    error = "ERROR: The capability \u201cScreen Recording\u201d is not supported by this device."
+    assert not capture.recording_started(error, physical=True, running_for=5)
+    assert not capture.recording_started("", physical=True, running_for=0.5)
+    assert capture.recording_started("", physical=True, running_for=2.5)
+
+
+def test_recording_is_offered_only_by_devices_that_list_it():
+    iphone, ipad = phones()
+    assert not iphone.can_record
+    iphone.capabilities = frozenset({"com.apple.coredevice.feature.screenrecording"})
+    assert iphone.can_record
+    assert "com.apple.coredevice.feature.connectdevice" in ipad.capabilities
 
 
 def test_xcode_teams_are_hints_sorted_paid_first():

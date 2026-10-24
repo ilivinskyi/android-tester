@@ -3,7 +3,9 @@
 Coordinates are screen points, the unit XCUITest taps in. Tree order is paint order: later siblings are
 drawn on top, so the path of child positions is the element's paint-order key, as on Android.
 The on-screen keyboard lives in its own windows; it is kept out of the element list and returned as an
-area that taps must avoid, plus the keys typing needs.
+area that taps must avoid, plus the keys typing needs. A third-party keyboard (Grammarly, Gboard, ...) runs in
+its own process: its window has Key elements but no Keyboard, and its frames start again at (0, 0) inside the
+view that hosts it, so they are moved back onto the screen (to_screen).
 """
 
 from __future__ import annotations
@@ -43,6 +45,7 @@ class Key:
 class Keyboard:
     area: Bounds
     keys: list[Key]
+    third_party: bool = False
 
 
 def _bounds(frame: list[float] | None) -> Bounds:
@@ -63,7 +66,31 @@ def _walk(node: dict):
 
 
 def _is_keyboard_window(window: dict) -> bool:
-    return any(n.get("type") == "Keyboard" or n.get("identifier") in _KEYBOARD_MARKERS for n in _walk(window))
+    return any(n.get("type") in ("Keyboard", "Key") or n.get("identifier") in _KEYBOARD_MARKERS
+               for n in _walk(window))
+
+
+def _remote_root(parent: list[float], child: list[float]) -> bool:
+    """A child at (0, 0) with its off-origin parent's size: the start of another process's coordinates."""
+    same_size = abs(parent[2] - child[2]) < 1 and abs(parent[3] - child[3]) < 1
+    return parent[:2] != [0, 0] and child[:2] == [0, 0] and same_size
+
+
+def to_screen(node: dict, offset: tuple[float, float] = (0, 0)) -> dict:
+    """A copy of the subtree with every frame in screen points."""
+    frame = node.get("frame")
+    out = dict(node)
+    if frame:
+        out["frame"] = [frame[0] + offset[0], frame[1] + offset[1], *frame[2:]]
+    children = []
+    for child in _children(node):
+        child_offset = offset
+        if frame and child.get("frame") and _remote_root(out["frame"], child["frame"]):
+            child_offset = (out["frame"][0], out["frame"][1])
+        children.append(to_screen(child, child_offset))
+    if children:
+        out["children"] = children
+    return out
 
 
 def _is_interactive(node: dict) -> bool:
@@ -108,6 +135,7 @@ def parse(data: dict, bundle_id: str = "") -> tuple[Snapshot, Keyboard | None]:
     elements: list[Element] = []
     keyboard_areas: list[Bounds] = []
     keys: list[Key] = []
+    third_party = False
 
     def visit(node: dict, depth: int, inside_interactive: bool, z: list[int]) -> None:
         t = node.get("type", "")
@@ -156,11 +184,19 @@ def parse(data: dict, bundle_id: str = "") -> tuple[Snapshot, Keyboard | None]:
 
     for position, window in enumerate(_children(root)):
         if _is_keyboard_window(window):
-            keyboard_areas.extend(_bounds(n.get("frame")).clip(screen) for n in _walk(window)
-                                  if n.get("type") == "Keyboard" or n.get("identifier") in _KEYBOARD_MARKERS)
-            for n in _walk(window):
-                if n.get("type") == "Keyboard":
-                    keys.extend(_keys(n, screen))
+            window = to_screen(window)
+            if any(n.get("type") == "Keyboard" or n.get("identifier") in _KEYBOARD_MARKERS for n in _walk(window)):
+                keyboard_areas.extend(_bounds(n.get("frame")).clip(screen) for n in _walk(window)
+                                      if n.get("type") == "Keyboard" or n.get("identifier") in _KEYBOARD_MARKERS)
+                for n in _walk(window):
+                    if n.get("type") == "Keyboard":
+                        keys.extend(_keys(n, screen))
+            else:
+                # A third-party keyboard: its area is everything in the window short of the full screen.
+                third_party = True
+                keyboard_areas.extend(b for n in _walk(window)
+                                      if (b := _bounds(n.get("frame")).clip(screen)).area and b != screen)
+                keys.extend(_keys(window, screen, only=("Key",)))
             continue
         visit(window, 1, False, [0, position])
     # System alerts (SpringBoard) are drawn above the app.
@@ -173,14 +209,14 @@ def parse(data: dict, bundle_id: str = "") -> tuple[Snapshot, Keyboard | None]:
         for b in keyboard_areas[1:]:
             area = Bounds(min(area.left, b.left), min(area.top, b.top), max(area.right, b.right),
                           max(area.bottom, b.bottom))
-        keyboard = Keyboard(area=area, keys=keys)
+        keyboard = Keyboard(area=area, keys=keys, third_party=third_party)
     return Snapshot(screen=screen, rotation=0, package=bundle_id, elements=elements), keyboard
 
 
-def _keys(keyboard: dict, screen: Bounds) -> list[Key]:
+def _keys(keyboard: dict, screen: Bounds, only: tuple[str, ...] = ("Key", "Button")) -> list[Key]:
     out = []
     for n in _walk(keyboard):
-        if n.get("type") not in ("Key", "Button"):
+        if n.get("type") not in only:
             continue
         b = _bounds(n.get("frame")).clip(screen)
         if b.area > 0:

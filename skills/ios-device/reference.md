@@ -59,7 +59,7 @@ Taps on an element go to a random point near its center that no other control co
 | `tap --xy X Y` / `tap --preview-xy X Y` | screen points / preview pixels; the guard checks the topmost element under the point |
 | `tap ... --long` | long press, 0.7-1.0 s |
 | `tap ... --allow-risk "APPROVAL"` | only after explicit user approval; logged to `guard_log.jsonl` |
-| `type "TEXT" [--index N] [--submit]` | taps the field first with `--index` and waits up to 3 s for the keyboard, then presses each key on the on-screen keyboard, switching shift and the number and symbol layers; `--submit` presses return; exit 6 when a character is on no key, or no keyboard is shown |
+| `type "TEXT" [--index N] [--submit]` | Apple's keyboard only (a third-party keyboard exits 6); taps the field first with `--index` and waits up to 3 s for the keyboard, then presses each key on the on-screen keyboard, switching shift and the number and symbol layers; `--submit` presses return; exit 6 when a character is on no key, or no keyboard is shown |
 | `key back` | left-edge swipe to 75-88% of the width; prints a note when the screen didn't change |
 | `key home` | the home button |
 | `key enter\|delete\|space [--repeat N]` | the keyboard's return, delete or space key |
@@ -88,7 +88,7 @@ Taps on an element go to a random point near its center that no other control co
 | `session start [--dir RUN] [--package BUNDLE] [--mode explore\|test-case\|repro\|ui-review\|retest] [--charter C] [--ticket T] [--record] [--log]` | creates `screenshots/ videos/ logs/ bugs/`, `session.json` (platform, device with kind and, for a real device, `personal`, app), `findings.json`; actions log to `logs/actions.jsonl`. Without `--dir`: `<reports dir from .mobile-tester/config.yaml>/<date>-<app>-<mode>[-<ticket>]`. `--log` is skipped with a note on a device |
 | `session end [--discard-video] [--no-report]` | stops the recording and the app log, then builds the report when `report check` passes |
 | `session status` | active run folder |
-| `record start --out FILE.mp4` / `record stop [--discard]` | `simctl io recordVideo`, on a device `devicectl device capture screen-record`; writes `FILE.timeline.json` with the wall-clock start |
+| `record start --out FILE.mp4` / `record stop [--discard]` | `simctl io recordVideo`, on a device `devicectl device capture screen-record` (only where the device offers it, otherwise refused with a reason); writes `FILE.timeline.json` with the wall-clock start |
 | `clip --from T --to T --out FILE [--video V] [--pad 3]` | T = `t` from actions.jsonl, `HH:MM:SS` today, or epoch; default video is the session's |
 | `log start --out FILE (--package BUNDLE \| --process NAME)` / `log stop` | the app's unified log, streamed in the background (simulators only) |
 | `crashes [--package BUNDLE] [--since EPOCH]` | the app's crash reports (`~/Library/Logs/DiagnosticReports/<executable>-*.ips`; on a device copied from its crash logs into `.mobile-tester/state/<udid>/crashes/`) since the session started, with exception and top frames |
