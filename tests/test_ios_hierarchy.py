@@ -87,3 +87,10 @@ def test_system_alert_is_on_top_of_the_app():
             {"type": "Button", "label": "Allow", "frame": [50, 430, 300, 50]}]}]}
     snap, _ = hierarchy.parse(data)
     assert ui.element_at(snap, 200, 450).label == "Allow"
+
+
+def test_navigation_bar_buttons_are_above_the_list_scrolling_under_them():
+    snap, keyboard = _load("ios_habits_edit_keyboard.json")
+    add = ui.find_by_text(snap, "Add")[0]
+    assert ui.visible_point(snap, add, (keyboard.area,)) is not None
+    assert ui.element_at(snap, *add.bounds.center) is add

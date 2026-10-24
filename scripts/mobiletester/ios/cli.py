@@ -1,0 +1,779 @@
+"""idt, the iOS device tool. Output is plain text meant to be read by an agent; --json where scripts need it.
+
+Same command names as adt where the concept exists. UI actions go through human.Driver: human-like by
+default, quicker with the global --fast flag (setup and reset steps only).
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import random
+import shutil
+import subprocess
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+from ..core import clip, commands, project, screen, session, state, ui
+from ..core.commands import (
+    EXIT_BLOCKED,
+    EXIT_DECISION,
+    EXIT_DEVICE,
+    EXIT_NOT_FOUND,
+    EXIT_OK,
+    EXIT_USAGE,
+    Blocked,
+    NeedsDecision,
+    NotFound,
+)
+from . import capture, crash, device, entry_script, keyboard, runner, simctl
+from .device import Device
+from .human import Driver
+from .runner import Runner, RunnerError
+from .simctl import DeviceError, SimctlError
+
+MODES = ["explore", "test-case", "repro", "ui-review", "retest", "memory"]
+
+
+# --- helpers ---------------------------------------------------------------------------------
+
+def _device(args) -> Device:
+    sim = simctl.find(args.udid or os.environ.get("IDT_UDID"))
+    return Device(sim, Runner(sim.udid))
+
+
+def _ready(dev: Device) -> Device:
+    """UI commands need the runner; start it on demand (about 15 s, once per simulator boot)."""
+    if not dev.runner.alive():
+        print(f"starting the runner on {dev.sim.name}: {dev.runner.start()}")
+    return dev
+
+
+def _print_observation(obs: device.Observation, as_json: bool) -> None:
+    if as_json:
+        print(json.dumps(obs.to_dict(), ensure_ascii=False))
+        return
+    s = obs.snapshot
+    where = obs.bundle_id + (f' "{obs.title}"' if obs.title else "")
+    print(f"screen: {where}  fp={obs.fingerprint}  {s.screen.right}x{s.screen.bottom} pt")
+    if obs.bundle_id == runner.SPRINGBOARD and obs.app_state is not None:
+        print(f"note: the app is not in the foreground ({device.state_name(obs.app_state)}); this is SpringBoard "
+              "(home screen or a system alert)")
+    if obs.keyboard:
+        print(f"keyboard: shown, {obs.keyboard.area.height} pt high from y={obs.keyboard.area.top} "
+              "(type with `idt type`; taps below that line hit keys)")
+    if obs.preview:
+        print(f"preview: {obs.preview}  (scale {obs.scale:.3f} preview px per point, numbers = element index)")
+        print(f"screenshot: {obs.screenshot}")
+    risky = [e for e in s.elements if e.risk]
+    if risky:
+        print(f"WARNING: {len(risky)} risky element(s) on screen: "
+              + ", ".join(f"[{e.index}] {e.risk}" for e in risky))
+    print(f"elements ({len(s.elements)}):")
+    for el in s.elements:
+        print("  " * min(el.depth // 6, 3) + el.describe())
+
+
+def _driver(dev: Device, args) -> Driver:
+    return Driver(dev, pace=args.pace, fast=args.fast, verify=not args.no_verify)
+
+
+def _after(dev: Device, args, outcome=None) -> None:
+    if outcome is not None and (warning := outcome.warning()):
+        print(warning)
+    if args.fast or outcome is None or outcome.changed is None:
+        time.sleep(getattr(args, "settle", 0.5))
+    if getattr(args, "observe", False):
+        _print_observation(device.observe(dev, save_dir=_session_shots(dev)), as_json=False)
+
+
+def _session_shots(dev: Device) -> Path | None:
+    directory = session.run_dir(dev.udid)
+    return directory / "screenshots" if directory else None
+
+
+def _tap_point(snap: ui.Snapshot, el: ui.Element, args, blocked: tuple[ui.Bounds, ...]) -> tuple[int, int]:
+    if ui.visible_point(snap, el, blocked) is None:
+        raise NotFound(f"{el.describe()} is covered by other controls or the keyboard. Scroll it into view, close "
+                       "the keyboard, or tap the control that covers it.")
+    if args.fast:
+        return ui.visible_point(snap, el, blocked)
+    return ui.human_point(snap, el, random.Random(), blocked)
+
+
+def _unique(matches: list[ui.Element], what: str) -> ui.Element:
+    if not matches:
+        raise NotFound(f"no element matches {what}")
+    if len(matches) > 1:
+        listing = "\n".join("  " + m.describe() for m in matches[:10])
+        raise NotFound(f"{len(matches)} elements match {what}, use --index:\n{listing}")
+    return matches[0]
+
+
+def _matches(snap: ui.Snapshot, args) -> list[ui.Element]:
+    return ui.find_by_text(snap, args.text) if args.text is not None else ui.find_by_id(snap, args.id)
+
+
+def _search(dev: Device, args, driver: Driver):
+    """Fresh lookup by text/id; with --scroll, scroll the main list down until found or it stops moving."""
+    what = f"text '{args.text}'" if args.text is not None else f"id '{args.id}'"
+    snap, kb, *_ = device.read_screen(dev)
+    for _ in range(args.scroll):
+        if _matches(snap, args):
+            break
+        scrollables = [e for e in snap.elements if e.scrollable]
+        if not scrollables:
+            break
+        driver.scroll("down", max(scrollables, key=lambda e: e.bounds.area).bounds)
+        before = snap
+        snap, kb, *_ = device.read_screen(dev)
+        if [e.label for e in snap.elements] == [e.label for e in before.elements]:
+            break  # reached the end of the list
+    return snap, kb, _unique(_matches(snap, args), what)
+
+
+def _resolve_target(dev: Device, args, driver: Driver) -> tuple[float, float, ui.Element | None, str]:
+    """(x, y, element or None, label for the output and the action log)."""
+    if args.index is not None:
+        snap, kb, _ = device.last_snapshot(dev.udid)
+        el = snap.find(args.index)
+        return (*_tap_point(snap, el, args, (kb.area,) if kb else ()), el, el.describe())
+    if args.text is not None or args.id is not None:
+        snap, kb, el = _search(dev, args, driver)
+        return (*_tap_point(snap, el, args, (kb.area,) if kb else ()), el, el.describe())
+    snap, kb, data = device.last_snapshot(dev.udid)
+    if args.xy:
+        x, y = args.xy
+    else:
+        scale = data.get("preview_scale") or 1.0
+        x, y = round(args.preview_xy[0] / scale), round(args.preview_xy[1] / scale)
+    if kb and kb.area.contains(x, y):
+        key = next((k for k in kb.keys if k.bounds.contains(x, y)), None)
+        return x, y, None, f"keyboard key '{key.label}'" if key else "keyboard"
+    el = ui.element_at(snap, x, y)
+    return x, y, el, el.describe() if el else ""
+
+
+def _approval_log(dev: Device, entry: dict) -> None:
+    log = state.device_dir(dev.udid) / "guard_log.jsonl"
+    with log.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"time": datetime.now().isoformat(timespec="seconds"), **entry}) + "\n")
+
+
+def _guard(dev: Device, el: ui.Element | None, allow_reason: str | None, action: str) -> None:
+    if el is None or not el.risk:
+        return
+    if not allow_reason:
+        raise Blocked(f"BLOCKED: {action} on {el.describe()} looks like a {el.risk} action. "
+                      "Stop and ask the user. If they approve, rerun with --allow-risk \"<their approval>\".")
+    _approval_log(dev, {"action": action, "element": el.describe(), "risk": el.risk, "approval": allow_reason})
+
+
+# --- commands without a simulator ------------------------------------------------------------
+
+def cmd_doctor(args) -> int:
+    ok = True
+    developer = subprocess.run(["xcode-select", "-p"], capture_output=True, text=True)
+    print(f"xcode-select: {developer.stdout.strip() or 'MISSING - install Xcode'}")
+    xcodebuild = shutil.which("xcodebuild")
+    if xcodebuild:
+        version = subprocess.run([xcodebuild, "-version"], capture_output=True, text=True).stdout.split("\n")[0]
+        print(f"xcodebuild: {version}")
+    else:
+        print("xcodebuild: MISSING - install Xcode")
+        return EXIT_DEVICE
+    for tool in ("ffmpeg", "ffprobe", "uv"):
+        print(f"{tool}: {shutil.which(tool) or 'not on PATH'}")
+    try:
+        runner.xctestrun(build=False)
+        print("runner: built")
+    except RunnerError:
+        print("runner: not built yet (`idt runner build`, about a minute, once per Xcode version)")
+    booted = [s for s in simctl.list_devices() if s.booted]
+    if not booted:
+        print("simulators: none booted (`xcrun simctl boot \"iPhone 17\"`, names in `idt devices`)")
+        ok = False
+    for sim in booted:
+        alive = Runner(sim.udid).alive()
+        print(f"simulator: {sim.udid} {sim.name} {sim.runtime} booted, runner {'running' if alive else 'stopped'}")
+    return EXIT_OK if ok else EXIT_DEVICE
+
+
+def cmd_devices(args) -> int:
+    sims = simctl.list_devices()
+    if args.json:
+        print(json.dumps([s.__dict__ for s in sims]))
+        return EXIT_OK
+    for s in sorted(sims, key=lambda s: (not s.booted, s.runtime, s.name)):
+        print(f"{s.udid}\t{s.state}\tsimulator\t{s.name}\t{s.runtime}")
+    return EXIT_OK if sims else EXIT_DEVICE
+
+
+# --- commands on a simulator -----------------------------------------------------------------
+
+def cmd_runner(args, dev: Device) -> int:
+    match args.runner_cmd:
+        case "build":
+            print(f"runner built: {runner.xctestrun()}")
+        case "start":
+            print(dev.runner.start())
+        case "stop":
+            print(dev.runner.stop())
+        case "status":
+            print(f"runner on port {dev.runner.port}: {'running' if dev.runner.alive() else 'stopped'}")
+    return EXIT_OK
+
+
+def cmd_info(args, dev: Device) -> int:
+    props = device.device_props(_ready(dev))
+    print(json.dumps(props) if args.json else "\n".join(f"{k}: {v}" for k, v in props.items()))
+    return EXIT_OK
+
+
+def cmd_observe(args, dev: Device) -> int:
+    _ready(dev)
+    save_dir = Path(args.save_dir) if args.save_dir else (_session_shots(dev) if args.name else None)
+    if args.image_only:
+        target = (save_dir or state.device_dir(dev.udid)) / f"{args.name or 'latest'}.png"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(dev.runner.screenshot())
+        print(f"screenshot: {target}  (no tree read: accessibility untouched)")
+        return EXIT_OK
+    obs = device.observe(dev, bundle_id=args.app, save_dir=save_dir, name=args.name, with_image=not args.no_image,
+                         marks=not args.no_marks)
+    _print_observation(obs, args.json)
+    return EXIT_OK
+
+
+def cmd_tap(args, dev: Device) -> int:
+    driver = _driver(_ready(dev), args)
+    x, y, el, label = _resolve_target(dev, args, driver)
+    action = "long-press" if args.long else "tap"
+    _guard(dev, el, args.allow_risk, action)
+    if el is not None and not el.enabled:
+        print(f"note: target is disabled: {el.describe()}")
+    outcome = driver.tap(x, y, target=label, long=args.long)
+    print(f"{action} ({x:.0f},{y:.0f})" + (f" -> {label}" if label else ""))
+    _after(dev, args, outcome)
+    return EXIT_OK
+
+
+def cmd_type(args, dev: Device) -> int:
+    driver = _driver(_ready(dev), args)
+    if args.index is not None:
+        snap, kb, _ = device.last_snapshot(dev.udid)
+        el = snap.find(args.index)
+        driver.tap(*_tap_point(snap, el, args, (kb.area,) if kb else ()), target=el.describe())
+        time.sleep(0.6)  # the keyboard slides in
+    try:
+        outcome = driver.type_text(args.text, submit=args.submit)
+    except keyboard.CannotType as exc:
+        raise NeedsDecision(f"{exc}. Ask the user how to continue (they may type it on the simulator).") from exc
+    except keyboard.NoKeyboard as exc:
+        raise NeedsDecision(f"{exc}. In Simulator.app, I/O > Keyboard > Toggle Software Keyboard (cmd-K) shows it "
+                            "while the Mac keyboard is connected.") from exc
+    # Never echo the text: it may be a credential from the secrets file.
+    print(f"typed {len(args.text)} chars" + (" + return" if args.submit else ""))
+    _after(dev, args, outcome)
+    return EXIT_OK
+
+
+def cmd_key(args, dev: Device) -> int:
+    driver = _driver(_ready(dev), args)
+    outcome = None
+    for _ in range(args.repeat):
+        outcome = driver.key(args.name)
+    print(f"key {args.name} x{args.repeat}" + (" (left-edge swipe)" if args.name.lower() == "back" else ""))
+    if args.name.lower() == "back" and outcome.changed is False:
+        print("note: the back swipe didn't change the screen. Some screens turn the gesture off or have nothing to go "
+              "back to: observe, then tap the app's own back button if there is one.")
+    _after(dev, args, outcome)
+    return EXIT_OK
+
+
+def cmd_swipe(args, dev: Device) -> int:
+    outcome = _driver(_ready(dev), args).swipe(*args.coords, ms=args.ms)
+    print(f"swipe {args.coords}")
+    _after(dev, args, outcome)
+    return EXIT_OK
+
+
+def cmd_scroll(args, dev: Device) -> int:
+    _ready(dev)
+    snap, _, _ = device.last_snapshot(dev.udid)
+    if args.index is not None:
+        area = snap.find(args.index).bounds
+    else:
+        scrollables = [e for e in snap.elements if e.scrollable]
+        area = max(scrollables, key=lambda e: e.bounds.area).bounds if scrollables else snap.screen
+    outcome = _driver(dev, args).scroll(args.direction, area)
+    print(f"scroll {args.direction} in {area}")
+    _after(dev, args, outcome)
+    return EXIT_OK
+
+
+def cmd_wait(args, dev: Device) -> int:
+    _ready(dev)
+    deadline = time.monotonic() + args.timeout
+    what = f"text '{args.text}'" if args.text else f"id '{args.id}'"
+    while True:
+        snap, *_ = device.read_screen(dev)
+        found = ui.find_by_text(snap, args.text) if args.text else ui.find_by_id(snap, args.id)
+        if bool(found) != args.gone:
+            print(f"{'gone' if args.gone else 'found'}: {what}")
+            return EXIT_OK
+        if time.monotonic() > deadline:
+            print(f"timeout after {args.timeout}s waiting for {what} to {'disappear' if args.gone else 'appear'}")
+            return EXIT_NOT_FOUND
+        time.sleep(0.5)
+
+
+def _installed_app(dev: Device, bundle_id: str) -> Path | None:
+    """The .app idt last installed for this bundle id: what clear-data reinstalls."""
+    known = (state.read_json(state.device_dir(dev.udid) / "installs.json") or {}).get(bundle_id)
+    return Path(known) if known and Path(known).is_dir() else None
+
+
+def cmd_app(args, dev: Device) -> int:
+    match args.app_cmd:
+        case "launch":
+            pid = simctl.launch(dev.udid, args.package)
+            dev.remember_app(args.package)
+            session.log_action(dev.udid, {"action": "app-launch", "mode": "setup", "package": args.package})
+            print(f"launched {args.package} (pid {pid})")
+            _after(dev, args)
+        case "stop":
+            was = simctl.terminate(dev.udid, args.package)
+            session.log_action(dev.udid, {"action": "app-stop", "mode": "setup", "package": args.package})
+            print(f"stopped {args.package}" if was else f"{args.package} was not running")
+        case "reset":
+            return _app_reset(args, dev)
+        case "install":
+            app = Path(args.app).resolve()
+            if app.suffix == ".ipa":
+                raise ValueError(".ipa files are for real devices; a simulator needs the .app built for it "
+                                 "(xcodebuild -sdk iphonesimulator)")
+            facts = simctl.bundle_of(app)
+            simctl.install(dev.udid, app)
+            installs = state.device_dir(dev.udid) / "installs.json"
+            state.write_json(installs, {**(state.read_json(installs) or {}), facts["package"]: str(app)})
+            session.log_action(dev.udid, {"action": "app-install", "mode": "setup", "file": app.name})
+            print(f"installed {facts['package']} {facts['versionName']} ({facts['versionCode']}) from {app}")
+        case "uninstall":
+            simctl.uninstall(dev.udid, args.package)
+            print(f"uninstalled {args.package}")
+        case "info":
+            print(json.dumps(simctl.app_info(dev.udid, args.package), indent=1))
+        case "list":
+            for bundle, info in sorted(simctl.apps(dev.udid).items()):
+                if info.get("ApplicationType") == "System" and not args.all:
+                    continue
+                if args.filter.casefold() in (bundle + info.get("CFBundleName", "")).casefold():
+                    print(f"{bundle}\t{info.get('CFBundleDisplayName') or info.get('CFBundleName', '')}\t"
+                          f"{info.get('ApplicationType', '')}")
+        case "find":
+            return _app_find(args, dev)
+        case "current":
+            bundle = dev.last_app() or session.package(dev.udid)
+            if not bundle:
+                print("no app known: pass one to `idt observe --app BUNDLE` or launch it with idt")
+                return EXIT_NOT_FOUND
+            print(f"{bundle} {device.state_name(_ready(dev).runner.app(bundle, 'state'))}")
+    return EXIT_OK
+
+
+def _app_reset(args, dev: Device) -> int:
+    started = datetime.now().astimezone()
+    steps = []
+    if simctl.terminate(dev.udid, args.package):
+        steps.append("terminate")
+    if args.level == "clear-data":
+        app = _installed_app(dev, args.package)
+        if app is None:
+            raise NotFound(f"clear-data reinstalls the app, but idt doesn't know where {args.package}'s .app is: "
+                           "install it once with `idt app install PATH` (built-in apps can't be reset this way)")
+        simctl.uninstall(dev.udid, args.package)
+        simctl.install(dev.udid, app)
+        steps += ["uninstall", "install"]
+    simctl.launch(dev.udid, args.package)
+    dev.remember_app(args.package)
+    steps.append("launch")
+    _ready(dev)
+    _, settled = screen.wait_stable(dev.runner.screenshot, timeout=8)
+    app_state = dev.runner.app(args.package, "state")
+    session.log_action(dev.udid, {"action": "app-reset", "mode": "setup", "package": args.package,
+                                  "level": args.level, "steps": steps}, started)
+    session.note_fast_step(dev.udid, f"reset ({args.level})")
+    print(f"reset {args.package} ({args.level}): {', '.join(steps)}")
+    if app_state != runner.FOREGROUND:
+        print("note: the app is not in the foreground; a system alert may be on top (observe, then answer it as "
+              "the profile's permission rule says)")
+    if not settled:
+        print("note: the screen is still changing (splash, animation or video); observe before acting")
+    return EXIT_OK
+
+
+def _app_find(args, dev: Device) -> int:
+    query = args.query.casefold()
+    scored = []
+    for bundle, info in simctl.apps(dev.udid).items():
+        names = [n for n in (info.get("CFBundleDisplayName"), info.get("CFBundleName")) if n]
+        haystack = [bundle.casefold(), *(n.casefold() for n in names)]
+        score = 100 if query in haystack else 85 if any(h.startswith(query) for h in haystack) else \
+            60 if any(query in h for h in haystack) else 0
+        if score:
+            scored.append((score, bundle, names[0] if names else "", info.get("ApplicationType", "")))
+    scored.sort(key=lambda s: (-s[0], s[1]))
+    if scored and scored[0][0] == 100 and (len(scored) == 1 or scored[1][0] < 100):
+        scored = scored[:1]
+    scored = scored[:args.limit]
+    if args.json:
+        print(json.dumps([{"package": b, "name": n, "type": t, "score": s} for s, b, n, t in scored]))
+    elif not scored:
+        print(f"no installed app matches '{args.query}'")
+    else:
+        sure = len(scored) == 1 and scored[0][0] >= 85
+        print("match:" if sure else f"{len(scored)} candidate(s), best first; ask the user to pick one:")
+        for i, (_, bundle, name, kind) in enumerate(scored, 1):
+            print(f"{i}. {name} ({bundle}, {kind.lower() or 'app'})")
+    return EXIT_OK if scored else EXIT_NOT_FOUND
+
+
+def cmd_log(args, dev: Device) -> int:
+    match args.log_cmd:
+        case "start":
+            process = args.process or simctl.app_info(dev.udid, args.package)["executable"]
+            pid = capture.log_start(dev.udid, process, Path(args.out))
+            print(f"app log ({process}) -> {Path(args.out).resolve()} (pid {pid})")
+        case "stop":
+            path = capture.log_stop(dev.udid)
+            print(f"app log stopped: {path}" if path else "the app log was not running")
+    return EXIT_OK
+
+
+def cmd_crashes(args, dev: Device) -> int:
+    bundle = args.package or session.package(dev.udid) or dev.last_app()
+    if not bundle:
+        raise ValueError("pass --package BUNDLE (no session or launched app known)")
+    executable = simctl.app_info(dev.udid, bundle)["executable"]
+    since = args.since if args.since is not None else _session_start(dev)
+    reports = crash.find(executable, bundle, since)
+    if not reports:
+        print(f"no crash reports of {bundle} since {datetime.fromtimestamp(since):%Y-%m-%d %H:%M:%S}")
+    for path in reports:
+        print(f"{path}\n  {crash.summary(path, frames=8)}")
+    return EXIT_OK
+
+
+def _session_start(dev: Device) -> float:
+    run = session.latest_run_dir(dev.udid)
+    data = state.read_json(run / "session.json") if run else None
+    if data and data.get("started"):
+        return datetime.fromisoformat(data["started"]).timestamp()
+    return time.time() - 3600
+
+
+def cmd_record(args, dev: Device) -> int:
+    match args.rec_cmd:
+        case "start":
+            pid = capture.record_start(dev.udid, Path(args.out))
+            print(f"recording -> {Path(args.out).resolve()} (pid {pid})")
+        case "stop":
+            path = capture.record_stop(dev.udid, discard=args.discard)
+            print("recording discarded" if args.discard else f"recording saved: {path}" if path
+                  else "no recording was running")
+    return EXIT_OK
+
+
+def cmd_clip(args, dev: Device) -> int:
+    if args.video:
+        video = Path(args.video)
+    else:
+        run = session.latest_run_dir(dev.udid)
+        if run is None:
+            raise NotFound("no session recording known for this simulator; pass --video PATH")
+        video = run / "videos" / "session.mp4"
+    start, end = clip.cut_clip(video, commands.parse_time(args.start), commands.parse_time(args.end), Path(args.out),
+                               args.pad)
+    print(f"clip {Path(args.out).resolve()} = {video.name} {start:.1f}-{end:.1f}s")
+    return EXIT_OK
+
+
+def cmd_session(args, dev: Device) -> int:
+    match args.session_cmd:
+        case "start":
+            props = device.device_props(_ready(dev))
+            meta = {
+                "mode": args.mode, "charter": args.charter, "ticket": args.ticket, "package": args.package,
+                "platform": "iOS", "device": props,
+                "input": "idt human mode (XCUITest touches)" + (f", pace {args.pace}" if args.pace != "human" else ""),
+            }
+            if args.package:
+                try:
+                    meta["app"] = simctl.app_info(dev.udid, args.package)
+                except SimctlError:
+                    meta["app"] = {"package": args.package, "installed": False}
+            directory = Path(args.dir) if args.dir else project.default_run_dir(args.package, args.mode, args.ticket)
+            defaults = {"title": project.default_title(args.package, args.mode, platform="iOS"),
+                        "tester": project.tester()}
+            directory = session.start(dev.udid, directory, meta, defaults)
+            (state.device_dir(dev.udid) / "crash_watch.json").unlink(missing_ok=True)
+            started = []
+            if args.log and args.package and meta["app"].get("executable"):
+                capture.log_start(dev.udid, meta["app"]["executable"], directory / "logs" / "app.log")
+                started.append("app log")
+            if args.record:
+                capture.record_start(dev.udid, directory / "videos" / "session.mp4")
+                started.append("recording")
+            active = session.active(dev.udid)
+            active["started_capture"] = started
+            state.write_json(state.device_dir(dev.udid) / "session.json", active)
+            print(f"session -> {directory}" + (f" ({', '.join(started)} running)" if started else ""))
+        case "end":
+            active = session.active(dev.udid)
+            if not active:
+                print("no active session")
+                return EXIT_OK
+            started = active.get("started_capture", [])
+            if "recording" in started:
+                print(f"recording: {capture.record_stop(dev.udid, discard=args.discard_video)}")
+            if "app log" in started:
+                print(f"app log: {capture.log_stop(dev.udid)}")
+            run = session.end(dev.udid)
+            print(f"session ended: {run}")
+            if run and not args.no_report:
+                commands.report_after_session(run, "idt")
+        case "status":
+            active = session.active(dev.udid)
+            print(json.dumps(active, indent=1) if active else "no active session")
+    return EXIT_OK
+
+
+def cmd_script(args, dev: Device) -> int:
+    """Run an app-profile script: .mobile-tester/apps/<bundle id>/<hooks|checks>/<name>.(py|sh)."""
+    kind = "hooks" if args.cmd == "hook" else "checks"
+    app_dir = Path(args.config_dir).resolve() / "apps" / args.package
+    candidates = [app_dir / kind / f"{args.name}{ext}" for ext in (".py", ".sh")]
+    script = next((c for c in candidates if c.is_file()), None)
+    if script is None:
+        raise NotFound(f"no {kind[:-1]} '{args.name}' in {app_dir / kind}")
+    idt_entry = entry_script()
+    env = {
+        **os.environ, "IDT_UDID": dev.udid, "MT_PLATFORM": "iOS", "MT_PACKAGE": args.package,
+        "MT_APP_DIR": str(app_dir), "MT_RUN_DIR": str(session.run_dir(dev.udid) or ""),
+        "IDT": f'"{sys.executable}" "{idt_entry}"', "MT_PYTHON": sys.executable, "MT_SCRIPT": str(idt_entry),
+    }
+    secrets = app_dir / "secrets.local.yaml"
+    if secrets.is_file():
+        env["MT_SECRETS"] = str(secrets)
+    if script.suffix == ".py":
+        uv = shutil.which("uv")
+        cmd = [uv, "run", "-q", "--script", str(script)] if uv else [sys.executable, str(script)]
+    else:
+        cmd = ["bash", str(script)]
+    session.log_action(dev.udid, {"action": f"{kind[:-1]}-{args.name}", "mode": "setup", "script": script.name})
+    return subprocess.run([*cmd, *args.script_args], env=env).returncode
+
+
+# --- parser ----------------------------------------------------------------------------------
+
+def _add_settle(p: argparse.ArgumentParser, observe: bool = True) -> None:
+    p.add_argument("--settle", type=float, default=0.5,
+                   help="seconds to wait after the action when the screen isn't checked (fast mode)")
+    if observe:
+        p.add_argument("--observe", action="store_true", help="observe right after the action")
+
+
+def _global_flags(parser: argparse.ArgumentParser, suppress: bool) -> None:
+    def default(value):
+        return argparse.SUPPRESS if suppress else value
+
+    parser.add_argument("-s", "--udid", default=default(None),
+                        help="simulator UDID or name (default: IDT_UDID or the only booted simulator)")
+    parser.add_argument("--fast", action="store_true", default=default(False),
+                        help="no pacing or checks: ONLY for setup/reset steps, never for the test itself")
+    parser.add_argument("--pace", choices=["human", "slow"], default=default(os.environ.get("MT_PACE", "human")))
+    parser.add_argument("--no-verify", action="store_true", default=default(False),
+                        help="skip the did-the-screen-change check")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="idt", description="iOS device tool for agent-driven testing (simulators)")
+    _global_flags(parser, suppress=False)
+    common = argparse.ArgumentParser(add_help=False)
+    _global_flags(common, suppress=True)
+    sub = commands.subparsers(parser, common, dest="cmd", required=True)
+
+    sub.add_parser("doctor", help="check Xcode, the runner and booted simulators")
+    p = sub.add_parser("devices", help="list simulators")
+    p.add_argument("--json", action="store_true")
+    p = sub.add_parser("runner", help="the XCUITest runner that drives the simulator (started on demand)")
+    run = commands.subparsers(p, common, dest="runner_cmd", required=True)
+    for name in ("build", "start", "stop", "status"):
+        run.add_parser(name)
+    p = sub.add_parser("info", help="simulator facts for reports (model, iOS, screen, keyboard, locale)")
+    p.add_argument("--json", action="store_true")
+
+    p = sub.add_parser("observe", help="read the screen: elements + screenshot with numbered boxes")
+    p.add_argument("--app", help="bundle id to read (default: the session's app, else the last launched one)")
+    p.add_argument("--save-dir", help="also copy tree/png/preview into this directory (evidence)")
+    p.add_argument("--name", help="file name stem (saved into the session's screenshots/ when a session is active)")
+    p.add_argument("--no-image", action="store_true", help="elements only, skip the screenshot")
+    p.add_argument("--no-marks", action="store_true", help="preview without numbered boxes")
+    p.add_argument("--image-only", action="store_true", help="screenshot only, no tree read (for repro runs)")
+    p.add_argument("--json", action="store_true")
+
+    p = sub.add_parser("tap", help="tap an element or point (points, not pixels)")
+    target = p.add_mutually_exclusive_group(required=True)
+    target.add_argument("--index", type=int, help="element index from the last observe")
+    target.add_argument("--text", help="visible text / accessibility label (fresh lookup)")
+    target.add_argument("--id", help="accessibility identifier (fresh lookup)")
+    target.add_argument("--xy", type=float, nargs=2, metavar=("X", "Y"), help="screen points")
+    target.add_argument("--preview-xy", type=int, nargs=2, metavar=("X", "Y"), help="pixels in the preview image")
+    p.add_argument("--scroll", type=int, nargs="?", const=8, default=0, metavar="MAX",
+                   help="with --text/--id: scroll down up to MAX times (default 8) to find the target")
+    p.add_argument("--long", action="store_true", help="long-press instead of tap")
+    p.add_argument("--allow-risk", metavar="APPROVAL", help="user's approval for a guarded element")
+    _add_settle(p)
+
+    p = sub.add_parser("type", help="type text key by key on the on-screen keyboard")
+    p.add_argument("text")
+    p.add_argument("--index", type=int, help="tap this element first to focus it")
+    p.add_argument("--submit", action="store_true", help="press return afterwards")
+    _add_settle(p)
+
+    p = sub.add_parser("key", help="back (left-edge swipe), home (home button), enter, delete, space")
+    p.add_argument("name")
+    p.add_argument("--repeat", type=int, default=1)
+    _add_settle(p)
+
+    p = sub.add_parser("swipe", help="swipe between two screen points")
+    p.add_argument("coords", type=float, nargs=4, metavar=("X1", "Y1", "X2", "Y2"))
+    p.add_argument("--ms", type=int, help="duration (default: human range, or 300 in fast mode)")
+    _add_settle(p)
+
+    p = sub.add_parser("scroll", help="scroll content (down = reveal content below)")
+    p.add_argument("direction", choices=["up", "down", "left", "right"])
+    p.add_argument("--index", type=int, help="scroll inside this element (default: largest scrollable)")
+    _add_settle(p)
+
+    p = sub.add_parser("wait", help="wait until an element appears (or disappears with --gone)")
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--text")
+    g.add_argument("--id")
+    p.add_argument("--gone", action="store_true")
+    p.add_argument("--timeout", type=float, default=10)
+
+    p = sub.add_parser("app", help="app management (setup operations)")
+    app = commands.subparsers(p, common, dest="app_cmd", required=True)
+    for name in ("launch", "stop", "uninstall", "info"):
+        ap = app.add_parser(name)
+        ap.add_argument("package", help="bundle id")
+        if name == "launch":
+            _add_settle(ap, observe=False)
+    ap = app.add_parser("reset", help="known start state: terminate, reinstall (clear-data), launch, wait")
+    ap.add_argument("package")
+    ap.add_argument("--level", choices=["restart", "clear-data"], default="restart",
+                    help="restart keeps the app's data; clear-data reinstalls the .app idt installed last")
+    ap = app.add_parser("install", help="install a simulator .app")
+    ap.add_argument("app")
+    ap = app.add_parser("list")
+    ap.add_argument("filter", nargs="?", default="")
+    ap.add_argument("--all", action="store_true", help="include built-in apps")
+    app.add_parser("current", help="the app idt works with and its state")
+    ap = app.add_parser("find", help="find an installed app by name or bundle id")
+    ap.add_argument("query")
+    ap.add_argument("--limit", type=int, default=8)
+    ap.add_argument("--json", action="store_true")
+
+    p = sub.add_parser("log", help="stream the app's unified log into a file")
+    log = commands.subparsers(p, common, dest="log_cmd", required=True)
+    lp = log.add_parser("start")
+    lp.add_argument("--out", required=True)
+    who = lp.add_mutually_exclusive_group(required=True)
+    who.add_argument("--package", help="bundle id (its executable's log is streamed)")
+    who.add_argument("--process", help="process name")
+    log.add_parser("stop")
+
+    p = sub.add_parser("crashes", help="the app's crash reports since the session started")
+    p.add_argument("--package", help="default: the session's app")
+    p.add_argument("--since", type=float, help="epoch seconds (default: the session start)")
+
+    p = sub.add_parser("record", help="screen recording of the simulator")
+    rec = commands.subparsers(p, common, dest="rec_cmd", required=True)
+    rp = rec.add_parser("start")
+    rp.add_argument("--out", required=True, help="target .mp4")
+    rp = rec.add_parser("stop")
+    rp.add_argument("--discard", action="store_true", help="delete the video (test passed)")
+
+    p = sub.add_parser("clip", help="cut a clip from a recording by wall-clock time (action log 't' values)")
+    p.add_argument("--from", dest="start", required=True, help="ISO time, HH:MM:SS or epoch")
+    p.add_argument("--to", dest="end", required=True)
+    p.add_argument("--out", required=True)
+    p.add_argument("--video", help="default: the active session's videos/session.mp4")
+    p.add_argument("--pad", type=float, default=3.0, help="seconds added before and after (default 3)")
+
+    p = sub.add_parser("session", help="standard run folder, action log, capture")
+    ses = commands.subparsers(p, common, dest="session_cmd", required=True)
+    sp = ses.add_parser("start")
+    sp.add_argument("--dir", help="run folder (default: <reports dir from the config>/<date>-<app>-<mode>"
+                                  "[-<ticket>])")
+    sp.add_argument("--package", help="bundle id of the app under test")
+    sp.add_argument("--mode", choices=MODES)
+    sp.add_argument("--charter")
+    sp.add_argument("--ticket")
+    sp.add_argument("--record", action="store_true", help="record the screen to videos/session.mp4")
+    sp.add_argument("--log", action="store_true", help="stream the app's log to logs/app.log")
+    sp = ses.add_parser("end", help="stop capture and build the report (when report check passes)")
+    sp.add_argument("--discard-video", action="store_true")
+    sp.add_argument("--no-report", action="store_true", help="don't build the report now")
+    ses.add_parser("status")
+
+    for name, kind in (("hook", "hooks"), ("check", "checks")):
+        p = sub.add_parser(name, help=f"run an app-profile script from .mobile-tester/apps/<bundle id>/{kind}/")
+        p.add_argument("name")
+        p.add_argument("--package", required=True)
+        p.add_argument("--config-dir", default=state.PROJECT_DIR)
+        p.add_argument("script_args", nargs="*", help="arguments for the script, after --")
+
+    commands.add_parsers(sub, common)
+    return parser
+
+
+_NO_DEVICE = {"doctor": cmd_doctor, "devices": cmd_devices, "report": commands.cmd_report,
+              "issues": commands.cmd_issues}
+_WITH_DEVICE = {
+    "runner": cmd_runner, "info": cmd_info, "observe": cmd_observe, "tap": cmd_tap, "type": cmd_type,
+    "key": cmd_key, "swipe": cmd_swipe, "scroll": cmd_scroll, "wait": cmd_wait, "app": cmd_app, "log": cmd_log,
+    "crashes": cmd_crashes, "record": cmd_record, "clip": cmd_clip, "session": cmd_session, "hook": cmd_script,
+    "check": cmd_script,
+}
+
+
+def main(argv: list[str] | None = None) -> int:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+    args = build_parser().parse_args(argv)
+    try:
+        if args.cmd in _NO_DEVICE:
+            return _NO_DEVICE[args.cmd](args)
+        return _WITH_DEVICE[args.cmd](args, _device(args))
+    except Blocked as exc:
+        print(exc, file=sys.stderr)
+        return EXIT_BLOCKED
+    except NeedsDecision as exc:
+        print(f"DECISION NEEDED: {exc}", file=sys.stderr)
+        return EXIT_DECISION
+    except (NotFound, LookupError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_NOT_FOUND
+    except (DeviceError, RunnerError) as exc:
+        print(f"device error: {exc}", file=sys.stderr)
+        return EXIT_DEVICE
+    except (SimctlError, capture.CaptureError, clip.ClipError, ValueError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return EXIT_USAGE if isinstance(exc, ValueError) else EXIT_DEVICE

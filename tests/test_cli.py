@@ -21,3 +21,20 @@ def test_adt_parses(argv):
 
 def test_adt_issues_default_to_the_project_folder():
     assert adt.build_parser().parse_args(["issues", "list", "--package", "p"]).config_dir == ".mobile-tester"
+
+
+@pytest.mark.parametrize("argv", [
+    ["report", "build", "RUN"],
+    ["issues", "sync", "RUN", "--package", "com.github.aint.Habits"],
+    ["tap", "--xy", "200.5", "300"],
+    ["--fast", "app", "reset", "com.github.aint.Habits", "--level", "clear-data"],
+    ["session", "start", "--package", "com.github.aint.Habits", "--mode", "explore", "--record", "--log"],
+    ["runner", "start"],
+    ["type", "Run 5k", "--submit"],
+    ["log", "start", "--out", "x.log", "--package", "com.github.aint.Habits"],
+])
+def test_idt_parses(argv):
+    from mobiletester.ios import cli as idt
+
+    args = idt.build_parser().parse_args(argv)
+    assert args.cmd == (argv[1] if argv[0].startswith("-") else argv[0])

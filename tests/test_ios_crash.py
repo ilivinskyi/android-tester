@@ -10,7 +10,8 @@ FIXTURE = Path(__file__).parent / "fixtures" / "Habits-2026-10-24-091201.ips"
 def test_summary_names_the_exception_and_the_top_frames():
     text = crash.summary(FIXTURE, frames=3)
     assert text == ("EXC_BREAKPOINT (SIGTRAP), Trace/BPT trap: 5; in Habits: "
-                    "Swift._assertionFailure(_:_:file:line:flags:) < HabitStore.delete(at:) < HabitListView.body.getter")
+                    "Swift._assertionFailure(_:_:file:line:flags:) < HabitStore.delete(at:) < "
+                    "HabitListView.body.getter")
 
 
 def test_find_only_new_reports_of_this_app(tmp_path):

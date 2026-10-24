@@ -22,6 +22,9 @@ SCROLLABLE = {"ScrollView", "Table", "CollectionView"}
 CHECKABLE = {"Switch", "Toggle", "CheckBox"}
 # Plain content worth listing when it has a label; containers (Other, Window, Toolbar...) only as leaves.
 TEXTUAL = {"StaticText", "Image", "Alert"}
+# Navigation bars, tab bars and toolbars are drawn above the scroll view that extends under them.
+BARS = {"NavigationBar", "TabBar", "Toolbar"}
+ON_TOP = 1_000_000
 _KEYBOARD_MARKERS = {"inputView", "SystemInputAssistantView"}
 
 
@@ -143,6 +146,9 @@ def parse(data: dict, bundle_id: str = "") -> tuple[Snapshot, Keyboard | None]:
                 el.risk = risk(own, el.label, el.resource_id)
             elements.append(el)
         swallows = interactive and t not in SCROLLABLE
+        if t in BARS and len(z) > 2:
+            # Bars float above the content scrolling under them, whatever their place in the tree.
+            z = [*z[:2], ON_TOP, *z[2:]]
         for position, child in enumerate(_children(node)):
             visit(child, depth + 1, inside_interactive or swallows, [*z, position])
 
