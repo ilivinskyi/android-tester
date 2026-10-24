@@ -13,7 +13,7 @@ They drive the device with human-like input, check every step, record evidence, 
 ```
 
 iOS support is new: it works on simulators, and has no performance or memory measurements yet.
-Support for real iPhones and iPads is newer still: so far it has run on one iPhone over USB.
+Support for real iPhones and iPads is newer still: so far it has run on one iPhone, over USB and Wi-Fi.
 
 ## Why this exists
 
@@ -76,7 +76,7 @@ flowchart TD
     I["/ios-native-tester"] --> J["ios-native-tester skill"]
     J --> K["ios-human-input + ios-device skills"]
     K --> L["idt CLI (Python)"]
-    L -->|XCUITest runner| M["iOS simulator"]
+    L -->|XCUITest runner| M["iOS simulator, iPhone or iPad"]
     L --> R
     A --> S["mobile-tester-shared<br/>onboarding, interview, modes, report standard"]
     J --> S
@@ -89,8 +89,8 @@ Both CLIs share one core: the report, the finding lifecycle, sessions, guardrail
 | `android-native-tester` | When you type `/android-native-tester`, or ask in plain words to test an app ("explore the Notes app for 15 minutes") | Onboarding on first use, the session interview, a session in one of six modes, the standard report |
 | `android-human-input` | Automatically, whenever a device is driven | The rules for human-like input and honest reproduction |
 | `android-device` | Automatically | Reference for the `adt` command-line tool that does the device work |
-| `ios-native-tester` | When you type `/ios-native-tester`, or ask to test an app on iOS | The same session flow on an iOS simulator (five modes; memory is Android only for now) |
-| `ios-human-input` | Automatically, whenever a simulator is driven | Human-like input on iOS: held touches, the left-edge back swipe, typing key by key |
+| `ios-native-tester` | When you type `/ios-native-tester`, or ask to test an app on iOS | The same session flow on an iOS simulator or a real iPhone or iPad (five modes; memory is Android only for now) |
+| `ios-human-input` | Automatically, whenever a simulator or device is driven | Human-like input on iOS: held touches, the left-edge back swipe, typing key by key |
 | `ios-device` | Automatically | Reference for the `idt` command-line tool |
 | `mobile-tester-shared` | Never on its own | Onboarding, interview, modes, auto mode, report standard and templates used by both testers |
 
@@ -145,7 +145,7 @@ sudo apt install adb ffmpeg openjdk-21-jre-headless scrcpy
 curl -LsSf https://astral.sh/uv/install.sh | sh
 ```
 
-## Prepare your phone
+## Prepare an Android phone
 
 1. Open **Settings > About phone** and tap **Build number** seven times to enable Developer options.
 2. In **Settings > System > Developer options**, turn on **USB debugging**.
@@ -179,7 +179,7 @@ The first `idt` command that touches the screen builds the XCUITest runner (abou
 
 ## Prepare a real iPhone or iPad
 
-This support is new and has run on one iPhone over USB so far; expect rough edges and tell us what you hit.
+This support is new and has run on one iPhone (USB and Wi-Fi) so far; expect rough edges and tell us what you hit.
 A real device runs the same XCUITest runner, signed with your Apple development team.
 Every step here is yours: the tester tells you what is missing (`idt doctor` prints a `to do:` line per device) and waits.
 
@@ -188,7 +188,8 @@ Every step here is yours: the tester tells you what is missing (`idt doctor` pri
 2. On the device, turn on **Settings > Privacy & Security > Developer Mode** and restart it.
    Then turn on **Settings > Developer > Enable UI Automation**.
 3. Sign in to Xcode with your Apple ID: **Xcode > Settings > Accounts**.
-   A free personal team works; its builds expire after 7 days, and the first time the device asks you to trust the developer under **Settings > General > VPN & Device Management**.
+   A free personal team works; the first time, the device asks you to trust the developer under **Settings > General > VPN & Device Management**.
+   Its signing lasts 7 days; the tester renews it by itself when less than a day is left.
 4. Give the tester your team id (10 letters and digits, shown in Xcode's Accounts pane or on developer.apple.com under Membership); it runs:
    ```bash
    idt -s <device UDID> runner build --team <TEAMID>

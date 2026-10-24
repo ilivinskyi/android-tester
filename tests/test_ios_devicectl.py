@@ -1,9 +1,11 @@
 import json
+import plistlib
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from mobiletester.ios import capture, crash, device, devicectl, signing, simctl
+from mobiletester.ios import capture, crash, device, devicectl, runner, signing, simctl
 
 FIXTURES = Path(__file__).parent / "fixtures"
 LISTING = json.loads((FIXTURES / "ios_devicectl_devices.json").read_text(encoding="utf-8"))["result"]
@@ -212,3 +214,79 @@ def test_the_report_names_a_personal_physical_device():
     assert "personal physical device" in report_text.environment_line(session)
     session["device"].update(kind="simulator", personal=False)
     assert ("Device kind", "simulator") in report_text.environment(session)
+
+
+def test_the_profile_expiry_is_read_from_the_decoded_profile():
+    profile = {"Name": "iOS Team Provisioning Profile", "ExpirationDate": datetime(2026, 10, 31, 13, 33)}
+    decoded = plistlib.dumps(profile)
+    assert runner.parse_profile(decoded) == datetime(2026, 10, 31, 13, 33, tzinfo=UTC)
+    assert runner.parse_profile(plistlib.dumps({"Name": "x"})) is None
+    assert runner.parse_profile(b"not a plist") is None
+
+
+def test_a_runner_is_rebuilt_only_within_a_day_of_expiry():
+    now = datetime(2026, 10, 30, 12, 0, tzinfo=UTC)
+    assert not runner.needs_rebuild(now + timedelta(days=3), now)
+    assert runner.needs_rebuild(now + timedelta(hours=20), now)
+    assert runner.needs_rebuild(now - timedelta(hours=1), now)
+    assert not runner.needs_rebuild(None, now)
+
+
+def _fake_builds(monkeypatch, tmp_path, expiries):
+    """Each build gets the next expiry from the list; returns the list of builds made."""
+    builds = []
+    monkeypatch.setattr(runner, "build_dir", lambda device, team: tmp_path / "build")
+
+    def xctestrun(device=None, team=None, build=True):
+        directory = tmp_path / "build"
+        if not directory.exists():
+            directory.mkdir()
+            builds.append(expiries[len(builds)])
+            (directory / "expiry").write_text(builds[-1].isoformat())
+        return directory / "MTRunner.xctestrun"
+
+    monkeypatch.setattr(runner, "xctestrun", xctestrun)
+    monkeypatch.setattr(runner, "forget_cached_profiles", lambda team: [])
+    monkeypatch.setattr(runner, "profile_expiry",
+                        lambda testrun: datetime.fromisoformat((testrun.parent / "expiry").read_text()))
+    return builds
+
+
+def test_an_expiring_runner_is_rebuilt_once_at_start(monkeypatch, tmp_path):
+    soon = datetime.now(UTC) + timedelta(hours=5)
+    later = datetime.now(UTC) + timedelta(days=7)
+    builds = _fake_builds(monkeypatch, tmp_path, [soon, later])
+    runner.xctestrun(device="D", team="T")  # the existing build
+    _, note = runner.fresh_device_build("D", "T")
+    assert builds == [soon, later]
+    assert "expires" in note and "rebuilt it with team T" in note and "valid until" in note
+    _, note = runner.fresh_device_build("D", "T")
+    assert builds == [soon, later] and note is None
+
+
+def test_a_profile_xcode_keeps_is_not_rebuilt_again_until_it_expires(monkeypatch, tmp_path):
+    soon = datetime.now(UTC) + timedelta(hours=5)
+    builds = _fake_builds(monkeypatch, tmp_path, [soon, soon, soon])
+    runner.xctestrun(device="D", team="T")
+    _, note = runner.fresh_device_build("D", "T")
+    assert "same profile back" in note and len(builds) == 2
+    _, note = runner.fresh_device_build("D", "T")
+    assert note is None and len(builds) == 2
+
+
+def test_only_this_runner_s_cached_profile_is_forgotten(monkeypatch, tmp_path):
+    monkeypatch.setenv("MT_PROFILES_DIR", str(tmp_path))
+    ours, other = tmp_path / "ours.mobileprovision", tmp_path / "other.mobileprovision"
+    ours.write_bytes(b"ours")
+    other.write_bytes(b"other")
+    ids = {str(ours): "AB12CD34EF.dev.mobiletester.MTRunner.ab12cd34ef.xctrunner",
+           str(other): "AB12CD34EF.com.example.app"}
+
+    class Done:
+        def __init__(self, path):
+            self.returncode = 0
+            self.stdout = plistlib.dumps({"Entitlements": {"application-identifier": ids[path]}})
+
+    monkeypatch.setattr(runner.subprocess, "run", lambda cmd, capture_output: Done(cmd[-1]))
+    assert runner.forget_cached_profiles("AB12CD34EF") == [ours]
+    assert not ours.exists() and other.exists()

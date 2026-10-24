@@ -15,7 +15,7 @@ Shared files (onboarding, interview, modes, auto mode, report standard, template
 Questions to the user: use your agent's question tool when it has one (AskUserQuestion in Claude Code), otherwise ask in chat as a short numbered list with the recommended option first.
 
 A simulator runs builds made for it (`.app` from `xcodebuild -sdk iphonesimulator`), not App Store apps or `.ipa` files; built-in apps (Reminders, Contacts, ...) are always there.
-Real-device support is new (tried on one iPhone over USB): say so when the user picks a device. Before typing on a device, check that it uses Apple's keyboard; with another one, ask the user to switch for the session.
+Real-device support is new (tried on one iPhone, over USB and Wi-Fi): say so when the user picks a device. Before typing on a device, check that it uses Apple's keyboard; with another one, ask the user to switch for the session.
 A real device runs App Store apps already on it and signed device builds (`.app`, or the `.app` inside an `.ipa`); it needs the one-time setup in the `ios-device` skill (pairing, Developer Mode, UI Automation, the user's signing team). That setup is the user's to do: tell them each step and wait.
 A real device counts as personal unless the device inventory says `personal: false` (and is treated as such until the user says otherwise); `kind: physical` and `personal` go into the report.
 

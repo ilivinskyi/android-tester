@@ -231,6 +231,15 @@ def cmd_doctor(args) -> int:
     return EXIT_OK if ok else EXIT_DEVICE
 
 
+def _signed_until(testrun: Path) -> str:
+    """', signed until <local time>' for a device runner, with a word on what happens when it runs out."""
+    expiry = runner.profile_expiry(testrun)
+    if expiry is None:
+        return ""
+    soon = " (rebuilt at the next runner start)" if runner.needs_rebuild(expiry) else ""
+    return f", signed until {runner.local_time(expiry)}{soon}"
+
+
 def _doctor_device(phone: devicectl.PhysicalDevice, team: str | None) -> None:
     via = "USB" if phone.transport == "wired" else "Wi-Fi" if phone.transport == "localNetwork" else phone.transport
     print(f"device: {phone.udid} {phone.model} \"{phone.name}\" {phone.runtime} via {via}: {phone.state}")
@@ -239,8 +248,7 @@ def _doctor_device(phone: devicectl.PhysicalDevice, team: str | None) -> None:
         return
     if team:
         try:
-            runner.xctestrun(build=False, device=phone.udid, team=team)
-            built = "built"
+            built = "built" + _signed_until(runner.xctestrun(build=False, device=phone.udid, team=team))
         except RunnerError:
             built = f"not built yet (`idt -s {phone.udid} runner build`)"
         alive = Runner(phone.udid, physical=True).alive()
@@ -272,13 +280,20 @@ def cmd_runner(args, dev: Device) -> int:
             # The team is the user's answer, saved for the next builds; never guessed.
             team = signing.save_team(args.team) if args.team else signing.team()
             print(f"building the runner for {dev.name} signed by team {team or '?'} (about a minute)...")
-            print(f"runner built: {runner.xctestrun(device=dev.udid, team=team)}")
+            testrun = runner.xctestrun(device=dev.udid, team=team)
+            print(f"runner built{_signed_until(testrun)}: {testrun}")
         case "start":
             print(dev.runner.start())
         case "stop":
             print(dev.runner.stop())
         case "status":
-            print(f"runner on port {dev.runner.port}: {'running' if dev.runner.alive() else 'stopped'}")
+            signed = ""
+            if dev.physical and (team := signing.team()):
+                try:
+                    signed = _signed_until(runner.xctestrun(build=False, device=dev.udid, team=team))
+                except RunnerError:
+                    signed = ", not built yet"
+            print(f"runner on port {dev.runner.port}: {'running' if dev.runner.alive() else 'stopped'}{signed}")
     return EXIT_OK
 
 
@@ -597,6 +612,9 @@ def cmd_session(args, dev: Device) -> int:
         case "start":
             props = device.device_props(_ready(dev))
             if dev.physical:
+                testrun = runner.xctestrun(build=False, device=dev.udid, team=signing.team())
+                if signed := _signed_until(testrun):
+                    print(f"runner{signed.replace(',', ':', 1)}")
                 props["personal"] = _personal(dev)
                 if not project.device_entry(dev.udid):
                     print("note: this device is not in the device inventory (config.yaml), so it counts as personal: "

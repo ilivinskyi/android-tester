@@ -5,7 +5,7 @@ Decisions from the initial interview (2026-10-23), revised after the Jumbo sessi
 ## Scope
 
 - Target: any APK / store app on Android; on iOS any simulator build, and on a real device any installed app or signed build; black-box (no source access assumed).
-- Devices: Android phones over USB and emulators; iOS simulators, and real iPhones and iPads over USB or Wi-Fi (first tried on an iPhone 15 Pro Max (iOS 27.0.1, USB) on 2026-10-24; Wi-Fi not yet tried).
+- Devices: Android phones over USB and emulators; iOS simulators, and real iPhones and iPads over USB or Wi-Fi (first tried on an iPhone 15 Pro Max (iOS 27.0.1, USB and Wi-Fi) on 2026-10-24).
 - Packaging: Claude Code plugin `mobile-tester` (this repo, still named android-tester on GitHub), skills in the open Agent Skills format.
 - iOS design and decisions: [superpowers/specs/2026-10-24-mobile-tester-design.md](superpowers/specs/2026-10-24-mobile-tester-design.md).
 
@@ -130,6 +130,10 @@ Modes of `android-native-tester` (guides in its folder, not separate skills): ex
 - Discovery and apps through `xcrun devicectl` (CoreDevice), reading its `--json-output` file, the interface Apple keeps stable; simctl and devicectl modules offer the same app functions.
 - The runner is built per device and signed by the user's team (`-allowProvisioningUpdates -allowProvisioningDeviceRegistration`, automatic signing, bundle id `dev.mobiletester.MTRunner.<team>`), since app ids are global and the profile must list the device.
 - The team id is the user's answer, never guessed; Xcode's signed-in teams are shown as hints; it is remembered per Mac.
+- The runner's profile expires (7 days for a free team).
+  `runner start` reads the expiry from the built runner's `embedded.mobileprovision` and rebuilds within a day of it.
+  Xcode reuses its cached profile until that has expired, so the rebuild first removes the cached profile whose application identifier is the runner's (no other).
+  If Apple still returns the same profile, idt doesn't rebuild again until it has expired.
 - devicectl has no port forward.
   While xcodebuild runs the test, CoreDevice keeps an IPv6 tunnel to the device (a utun on the Mac); `devicectl device info details` gives the device's `tunnelIPAddress`, new for every tunnel.
   The runner listens on all IPv6 addresses but admits only connections from unique local addresses (fc00::/7) on a tunnel interface (`utun`).
@@ -149,7 +153,7 @@ Modes of `android-native-tester` (guides in its folder, not separate skills): ex
 
 - Not yet verified on Android after the split: Show taps (`adt touches`), memory mode, and APK inspection or install on a real phone (an emulator session on Contacts covered the rest on 2026-10-24).
 - Test-case documentation of the plugin's own steps in `docs/testcases/`, grouped by functionality.
-- iOS: on a device, verify a device over Wi-Fi, a crash caught by the crash watch, and recording on a device that offers it.
+- iOS: on a device, verify a crash caught by the crash watch, and recording on a device that offers it.
 - iOS: video on devices without CoreDevice recording (for example from the runner's screenshots).
 - iOS: app log streaming on devices, performance and memory checks, `.ipa` inspection.
 - Planned for both platforms: an exploration coverage map from screen fingerprints, a selector cache for test cases, a monkey/stress mode.

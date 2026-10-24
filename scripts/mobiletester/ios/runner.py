@@ -6,7 +6,9 @@ UDID: on a simulator, which shares the Mac's network, at 127.0.0.1; on a real de
 CoreDevice's tunnel (see devicectl.py), and only there, so nobody else on the Wi-Fi can drive the device.
 Each start gets a random token that every request carries, so nothing else that reaches the port can use it.
 A device build is signed by the user's team (signing.py) and made for that device, so its provisioning
-profile includes it.
+profile includes it. That profile expires (after 7 days with a free personal team); `runner start` rebuilds
+the runner with the saved team when less than REBUILD_MARGIN is left. Xcode reuses its cached profile until
+that one has expired, so the rebuild first removes the cached profile of this runner's app id (and no other).
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import plistlib
 import secrets
 import shutil
 import signal
@@ -21,6 +24,7 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from ..core import state
@@ -32,6 +36,8 @@ SPRINGBOARD = "com.apple.springboard"
 # XCUIApplication.State raw values.
 APP_STATES = {0: "unknown", 1: "not running", 2: "background (suspended)", 3: "background", 4: "foreground"}
 FOREGROUND = 4
+# Rebuild a device runner whose profile expires within this time, so it can't run out during a session.
+REBUILD_MARGIN = timedelta(days=1)
 
 
 class RunnerError(Exception):
@@ -122,6 +128,84 @@ def xctestrun(build: bool = True, device: str | None = None, team: str | None = 
         hint = signing_hint(text) if device else ""
         raise RunnerError(f"building the runner failed{hint} (full log: {log}):\n{tail}")
     return found[0]
+
+
+def parse_profile(decoded: bytes) -> datetime | None:
+    """The expiry of a provisioning profile, from its decoded plist (`security cms -D`)."""
+    try:
+        expiry = plistlib.loads(decoded).get("ExpirationDate")
+    except plistlib.InvalidFileException:
+        return None
+    if not isinstance(expiry, datetime):
+        return None
+    return expiry if expiry.tzinfo else expiry.replace(tzinfo=UTC)
+
+
+def profile_expiry(testrun: Path) -> datetime | None:
+    """When the device runner next to this .xctestrun stops launching: its embedded profile's expiry."""
+    profiles = sorted(testrun.parent.glob("*/MTRunner-Runner.app/embedded.mobileprovision"))
+    if not profiles:
+        return None
+    proc = subprocess.run(["security", "cms", "-D", "-i", str(profiles[0])], capture_output=True)
+    return parse_profile(proc.stdout) if proc.returncode == 0 else None
+
+
+def profiles_dir() -> Path:
+    return Path(os.environ.get("MT_PROFILES_DIR",
+                               Path.home() / "Library" / "Developer" / "Xcode" / "UserData" / "Provisioning Profiles"))
+
+
+def app_id(team: str) -> str:
+    """The application identifier in the runner's profile: team prefix, bundle id, XCUITest's suffix."""
+    return f"{team}.{bundle_id(team)}.xctrunner"
+
+
+def profile_app_id(decoded: bytes) -> str:
+    try:
+        return str((plistlib.loads(decoded).get("Entitlements") or {}).get("application-identifier", ""))
+    except plistlib.InvalidFileException:
+        return ""
+
+
+def forget_cached_profiles(team: str) -> list[Path]:
+    """Remove Xcode's cached profiles for this runner, so the next build fetches a new one. Others stay."""
+    removed = []
+    for path in sorted(profiles_dir().glob("*.mobileprovision")):
+        proc = subprocess.run(["security", "cms", "-D", "-i", str(path)], capture_output=True)
+        if proc.returncode == 0 and profile_app_id(proc.stdout) == app_id(team):
+            path.unlink()
+            removed.append(path)
+    return removed
+
+
+def needs_rebuild(expiry: datetime | None, now: datetime | None = None) -> bool:
+    """An unknown expiry counts as fine: a runner that can't launch says so itself (start_hint)."""
+    return expiry is not None and expiry - (now or datetime.now(UTC)) < REBUILD_MARGIN
+
+
+def fresh_device_build(device: str, team: str) -> tuple[Path, str | None]:
+    """The device runner, rebuilt first when its profile is about to expire; (xctestrun, note or None)."""
+    testrun = xctestrun(device=device, team=team)
+    expiry = profile_expiry(testrun)
+    kept = build_dir(device, team) / "kept-profile.txt"
+    already_tried = kept.is_file() and kept.read_text() == expiry.isoformat() and expiry > datetime.now(UTC)
+    if not needs_rebuild(expiry) or already_tried:
+        return testrun, None
+    forget_cached_profiles(team)
+    shutil.rmtree(build_dir(device, team))
+    testrun = xctestrun(device=device, team=team)
+    renewed = profile_expiry(testrun)
+    when = "expired" if expiry < datetime.now(UTC) else "expires"
+    note = f"the runner's signing {when} {local_time(expiry)}; rebuilt it with team {team}"
+    if renewed == expiry:
+        # Apple handed back the same profile; it makes a new one once this one has expired. Don't rebuild until then.
+        kept.write_text(expiry.isoformat())
+        return testrun, note + ", but got the same profile back; it renews once it has expired"
+    return testrun, note + (f", valid until {local_time(renewed)}" if renewed else "")
+
+
+def local_time(moment: datetime) -> str:
+    return f"{moment.astimezone():%Y-%m-%d %H:%M}"
 
 
 def signing_hint(build_log: str) -> str:
@@ -217,8 +301,14 @@ class Runner:
     def start(self, timeout: float | None = None) -> str:
         if self.alive():
             return "already running"
-        team = signing.team() if self.physical else None
-        testrun = xctestrun(device=self.udid if self.physical else None, team=team)
+        note = None
+        if self.physical:
+            team = signing.team()
+            if not team:
+                raise signing.MissingTeam(signing.missing_team_message())
+            testrun, note = fresh_device_build(self.udid, team)
+        else:
+            testrun = xctestrun()
         log = state.device_dir(self.udid) / "runner.log"
         token = secrets.token_urlsafe(24)
         env = {**os.environ, "TEST_RUNNER_MT_RUNNER_PORT": str(self.port), "TEST_RUNNER_MT_RUNNER_TOKEN": token}
@@ -242,7 +332,7 @@ class Runner:
                 except devicectl.DevicectlError:
                     pass
             if self._host is not None and self.alive():
-                return f"started on {self.url} (xcodebuild pid {proc.pid})"
+                return (f"{note}\n" if note else "") + f"started on {self.url} (xcodebuild pid {proc.pid})"
             if proc.poll() is not None:
                 text = log.read_text(errors="replace")
                 tail = "\n".join(text.splitlines()[-15:])

@@ -41,7 +41,8 @@ Every step that touches the user's Apple ID, signing or the device itself is the
 3. The user's Apple ID is signed in to Xcode (Xcode > Settings > Accounts).
 4. Ask the user for their development team id, then `idt -s UDID runner build --team TEAMID`. It is remembered on this Mac; the build is per device. Xcode creates a development certificate and profile in that team and registers the device: say so when you ask.
    `DECISION NEEDED: ... team` from any command means no team is known yet: ask, never pick one from the hints it prints.
-5. With a free personal team the device asks to trust the developer the first time: Settings > General > VPN & Device Management (the user does this). Its profiles expire after 7 days; `idt runner build` again then.
+5. With a free personal team the device asks to trust the developer the first time: Settings > General > VPN & Device Management (the user does this).
+   Its signing expires after 7 days: `idt runner start` renews it by itself in the last day (about 20 s), and `idt doctor`, `runner status` and `session start` show the date.
 6. Keep the device unlocked while testing: a locked device stops the runner.
 
 ## The loop: observe, look, act, check
@@ -81,10 +82,10 @@ Exit codes: 4 not found or covered, 5 guardrail block, 6 decision needed (e.g. a
 
 ## Known limits
 
-- Real-device support is new (tried on one iPhone over USB): if a step fails in a way these instructions don't cover, tell the user what failed instead of working around it.
+- Real-device support is new (tried on one iPhone, over USB and Wi-Fi): if a step fails in a way these instructions don't cover, tell the user what failed instead of working around it.
 - Real devices: no app log streaming yet; crash reports work.
   Video only where Xcode offers recording for the device (`note: no recording` at session start otherwise, e.g. on an iPhone 15 Pro Max): screenshots are the evidence then.
-  `.ipa` files must be unzipped to the `.app` inside first; a free personal team's runner build expires after 7 days.
+  `.ipa` files must be unzipped to the `.app` inside first.
 - Typing needs Apple's keyboard. With a third-party keyboard (Grammarly, Gboard, ...) `type` stops with `DECISION NEEDED`: ask the user to switch keyboards with the globe key, or to type the text themselves.
 - The guardrail classifier knows English labels only: on a Dutch app "Toevoegen aan mandje" (add to basket) is not marked `RISK`; judge such buttons yourself.
 - Over Wi-Fi a device is slower than over USB: every action takes screenshots through the tunnel.
