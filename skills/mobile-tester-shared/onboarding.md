@@ -1,6 +1,9 @@
 # Onboarding
 
-Runs once per project, on the first `/android-native-tester` when `.android-tester/config.yaml` is missing, or when the user asks to redo it.
+`dt` is the platform's device tool: `adt` on Android, `idt` on iOS.
+
+Runs once per project, on the first `/android-native-tester` or `/ios-native-tester` when `.mobile-tester/config.yaml` is missing, or when the user asks to redo it.
+One config serves both platforms: a project that already has it skips the parts that are done and only adds what the new platform needs (its devices, its app profiles).
 Ask with your question tool (AskUserQuestion in Claude Code) or as a numbered list in chat, at most four questions at a time, recommended option first.
 Write the answers into the files below as you go, so an interrupted onboarding keeps what it has.
 
@@ -16,23 +19,26 @@ Ask:
 
 ## 2. Device inventory
 
-1. Run `adt devices`, and `adt -s SERIAL info` for each ready device.
+1. Run `dt devices`, and `dt -s DEVICE info` for each ready device.
 2. For each device ask: a short name, and whether it is a **personal** device.
    Personal devices get stricter guardrails: no system-setting changes, no clearing app data, no installing builds without asking.
-3. Record serial, name, kind (physical or emulator), personal, navigation mode and keyboard.
-   If the keyboard isn't Gboard, warn that on-screen typing may need the fallback (see `keyboard_fallback` in auto mode).
+   Simulators and emulators are never personal.
+3. Record the device id (Android serial, iOS simulator UDID), name, platform, kind (physical, emulator or simulator), personal, navigation and keyboard.
+   Android: if the keyboard isn't Gboard, warn that on-screen typing may need the fallback (see `keyboard_fallback` in auto mode).
 
 ## 3. App profiles
 
 Ask whether to set up an app profile now (it can also be created at the first session for that app).
-For each app, create `.android-tester/apps/<package>/` from the templates:
-- `profile.yaml`: name, package, store URL, expected signer, login method, reset strategy (see "Start state" below), which hooks run when, risky areas,
+For each app, create `.mobile-tester/apps/<package>/` from the templates:
+- `profile.yaml`: name, platform, package, store URL, expected signer (Android), login method, reset strategy (see "Start state" below), which hooks run when, risky areas,
   and the `about` block (see "Describe the app" below).
 - `notes.md`: what testers learn over time (screen map, quirks, known issues, test accounts by name only). The app's purpose and rules belong in `about`, not here.
 - `hooks/` and `checks/` with the example scripts, only when the user wants scripts.
 - `secrets.local.yaml` only when the login method is `secrets`; the user fills it in themselves. Never ask for passwords in chat.
 
-To fill `expected_signer_sha256`, install the app from the store on a trusted device and inspect it later, or take the signer from a build the team trusts (`adt apk inspect`).
+The same app on both platforms gets two profiles (package and bundle id usually differ); the second can copy the first one's `about` block after the user confirms the apps behave the same.
+
+Android: to fill `expected_signer_sha256`, install the app from the store on a trusted device and inspect it later, or take the signer from a build the team trusts (`adt apk inspect`).
 
 ### Describe the app
 
@@ -48,8 +54,8 @@ This is the most important part of the profile: without it the model can only gu
 
 Reruns are only comparable when each one starts from the same state.
 Ask: "How should I bring the app back to a known start state before each run?" and save the answer as `reset.strategy`:
-- **Clear data** (recommended when the login can be redone without the user: guest, secrets or a login hook): like a fresh install every time. On a personal device it still asks first, once per session.
-- **Restart**: force-stop and relaunch. Keeps data and login; choose it when the user logs in by hand or the data is slow to set up.
+- **Clear data** (recommended when the login can be redone without the user: guest, secrets or a login hook): like a fresh install every time. Android clears the app's data; iOS reinstalls the `.app` that `idt app install` installed last (built-in iOS apps can't be reset this way). On a personal device it still asks first, once per session.
+- **Restart**: stop and relaunch. Keeps data and login; choose it when the user logs in by hand or the data is slow to set up.
 - **Script**: an app-specific reset hook that removes only what tests leave behind (e.g. items added to a list) and keeps the login. Copy `templates/hooks/reset.py` and set `hooks.reset`.
 - **Never**: the user prepares the state by hand.
 
@@ -76,11 +82,11 @@ Ask: "Would you like auto mode? Then I won't stop at routine decisions and use t
 
 ## 5. Files and ignores
 
-1. Write `.android-tester/config.yaml` from `templates/config.yaml`.
+1. Write `.mobile-tester/config.yaml` from `templates/config.yaml`.
 2. Offer to add these lines to the project's `.gitignore` (ask before editing it):
    ```
-   .adt/
-   .android-tester/**/secrets.local.yaml
+   .mobile-tester/state/
+   .mobile-tester/**/secrets.local.yaml
    ```
    Reports may contain screenshots of personal data; ask whether `reports/` should be ignored too.
 3. Summarise what was set up and continue with the session interview.

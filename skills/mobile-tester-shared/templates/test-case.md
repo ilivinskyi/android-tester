@@ -1,7 +1,7 @@
 # <ID> <What the case checks, in one line>
 
 <!--
-Format for test cases run by /android-native-tester test-case.
+Format for test cases run by /android-native-tester or /ios-native-tester test-case.
 Replace every <...>. One action per step; put the expected result right under the step it belongs to.
 Use the exact labels shown in the app, in quotes, and spell out any test data.
 -->

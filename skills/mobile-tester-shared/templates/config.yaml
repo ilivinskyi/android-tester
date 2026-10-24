@@ -1,5 +1,5 @@
-# android-native-tester project configuration.
-# Written by onboarding; safe to edit by hand. Lives in <project>/.android-tester/config.yaml.
+# mobile-tester project configuration, shared by android-native-tester and ios-native-tester.
+# Written by onboarding; safe to edit by hand. Lives in <project>/.mobile-tester/config.yaml.
 version: 1
 
 tester:
@@ -19,11 +19,12 @@ jira:
 severity_notes: ""          # team additions to the standard severity scale, if any
 
 devices:
-  - serial: ""
-    name: ""                # e.g. "Test phone 1"
-    kind: physical          # physical | emulator
+  - id: ""                  # Android serial (`adt devices`) or iOS simulator UDID (`idt devices`)
+    platform: Android       # Android | iOS
+    name: ""                # e.g. "Test phone 1", "iPhone 17 simulator"
+    kind: physical          # physical | emulator | simulator
     personal: true          # stricter guardrails: no system settings, data clearing or installs without asking
-    navigation: gesture     # from `adt info`
+    navigation: gesture     # from `adt info` / `idt info`
     keyboard: gboard
 
 auto_mode:

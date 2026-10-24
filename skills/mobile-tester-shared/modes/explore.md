@@ -1,5 +1,7 @@
 # Explore mode: exploratory testing
 
+`dt` is the platform's device tool: `adt` on Android, `idt` on iOS.
+
 Goal: find the most important problems within the time box, guided by the charter.
 
 ## Plan (2 minutes)
@@ -15,7 +17,7 @@ Work area by area, like a curious, slightly impatient user:
 - **Rules:** try to break each rule in `about.rules`: the limits, validations and permissions it describes, from both sides.
 - **Roles:** when `about.roles` lists several, check that each sees and can do only what it should.
 - **Inputs:** empty, very long, special characters (`%`, `&`, quotes, `<b>`, `$(x)`), emoji, other scripts, numbers at limits (0, negative, 999, decimals).
-- **Interruptions:** back in the middle of a flow, app switch, force-stop and relaunch, rotate (emulator), notification permission denied.
+- **Interruptions:** back in the middle of a flow (iOS: the edge swipe and the app's back button), app switch, stop and relaunch, rotate (emulator or simulator), notification permission denied.
 - **State:** does entered data, login or unfinished work survive a restart? Do changes show up everywhere they should?
 - **Prompts:** permissions, consent and rating prompts: follow the auto-mode defaults, note how they behave and what they cover.
 - **External handoffs:** links that open the browser, login custom tabs, store pages: does the app recover when you come back?

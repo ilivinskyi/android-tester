@@ -538,14 +538,14 @@ def cmd_script(args, adb: Adb) -> int:
         raise NotFound(f"no {kind[:-1]} '{args.name}' in {app_dir / kind}")
     adt_entry = entry_script()
     env = {
-        **os.environ, "ANDROID_SERIAL": adb.serial, "ADB": str(adb.path), "ADT_PACKAGE": args.package,
-        "ADT_APP_DIR": str(app_dir), "ADT_RUN_DIR": str(session.run_dir(adb.serial) or ""),
-        # Shell scripts use $ADT; Python hooks call [ADT_PYTHON, ADT_SCRIPT, ...] to avoid quoting issues.
-        "ADT": f'"{sys.executable}" "{adt_entry}"', "ADT_PYTHON": sys.executable, "ADT_SCRIPT": str(adt_entry),
+        **os.environ, "ANDROID_SERIAL": adb.serial, "ADB": str(adb.path), "MT_PLATFORM": "Android",
+        "MT_PACKAGE": args.package, "MT_APP_DIR": str(app_dir), "MT_RUN_DIR": str(session.run_dir(adb.serial) or ""),
+        # Shell scripts use $ADT; Python hooks call [MT_PYTHON, MT_SCRIPT, ...] (adt here, idt on iOS).
+        "ADT": f'"{sys.executable}" "{adt_entry}"', "MT_PYTHON": sys.executable, "MT_SCRIPT": str(adt_entry),
     }
     secrets = app_dir / "secrets.local.yaml"
     if secrets.is_file():
-        env["ADT_SECRETS"] = str(secrets)
+        env["MT_SECRETS"] = str(secrets)
     if script.suffix == ".py":
         uv = shutil.which("uv")
         cmd = [uv, "run", "-q", "--script", str(script)] if uv else [sys.executable, str(script)]
@@ -634,7 +634,7 @@ def _global_flags(parser: argparse.ArgumentParser, suppress: bool) -> None:
                         help="device serial (default: ANDROID_SERIAL or the only device)")
     parser.add_argument("--fast", action="store_true", default=default(False),
                         help="instant adb input, no pacing: ONLY for setup/reset steps, never for the test itself")
-    parser.add_argument("--pace", choices=["human", "slow"], default=default(os.environ.get("ADT_PACE", "human")))
+    parser.add_argument("--pace", choices=["human", "slow"], default=default(os.environ.get("MT_PACE", "human")))
     parser.add_argument("--no-verify", action="store_true", default=default(False),
                         help="skip the did-the-screen-change check")
 

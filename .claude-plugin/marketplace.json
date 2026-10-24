@@ -1,14 +1,14 @@
 {
-  "name": "android-tester",
-  "description": "Android Tester: human-like testing of Android apps from Claude Code.",
+  "name": "mobile-tester",
+  "description": "Mobile Tester: human-like testing of Android and iOS apps from Claude Code.",
   "owner": {
     "name": "Ihor Livinskyi"
   },
   "plugins": [
     {
-      "name": "android-tester",
+      "name": "mobile-tester",
       "source": "./",
-      "description": "Exploratory, test-case, bug-repro and UI-review sessions on Android devices, driven like a person, with a standard QA report."
+      "description": "Exploratory, test-case, bug-repro and UI-review sessions on Android devices and iOS simulators, driven like a person, with one standard QA report."
     }
   ]
 }

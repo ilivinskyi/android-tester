@@ -1,8 +1,9 @@
-# App profile: <project>/.android-tester/apps/<package>/profile.yaml
-package: com.example.app
+# App profile: <project>/.mobile-tester/apps/<package or bundle id>/profile.yaml
+platform: Android             # Android | iOS
+package: com.example.app      # Android package name or iOS bundle id
 name: <App name>
 store_url: ""                 # e.g. https://play.google.com/store/apps/details?id=com.example.app
-expected_signer_sha256: ""    # builds signed by another key are not installed without asking
+expected_signer_sha256: ""    # Android: builds signed by another key are not installed without asking
 
 # What the app is and how it works, in the user's own words.
 # Every session reads this first: test ideas, expected behaviour and severity come from here and from
@@ -28,20 +29,21 @@ login:
 # before each test case and before each known issue in a retest.
 reset:
   strategy: restart           # restart | clear-data | hook | none
-  # restart:    `adt app reset --level restart`: force-stop and relaunch; data, login and settings stay
-  # clear-data: `adt app reset --level clear-data`: like a fresh install (onboarding, login and permission
-  #             prompts again); on a personal device it asks first, once per session
+  # restart:    `dt app reset --level restart`: stop and relaunch; data, login and settings stay
+  # clear-data: `dt app reset --level clear-data`: like a fresh install (onboarding, login and permission
+  #             prompts again; iOS reinstalls the .app idt installed last); on a personal device it asks
+  #             first, once per session
   # hook:       hooks.reset removes what tests leave behind (e.g. empties a list) and keeps the login
   # none:       never reset; the tester prepares the state by hand
   after: []                   # what to do after a reset, in plain words, e.g. ["skip the intro screens"]
                               # login runs again after clear-data, as `login` says
 
-hooks:                        # scripts in hooks/, run by name with `adt hook <name> --package <package>`
+hooks:                        # scripts in hooks/, run by name with `dt hook <name> --package <package>` (dt: adt or idt)
   setup: ""                   # before the session, e.g. "setup"
   reset: ""                   # used when reset.strategy is hook, e.g. "reset"
   teardown: ""                # after the session
 
-checks: []                    # scripts in checks/, e.g. ["logcat-errors"], run at wrap-up
+checks: []                    # scripts in checks/, e.g. ["logcat-errors"] (Android), run at wrap-up
 
 risky_areas: []               # e.g. [account settings, data deletion]: extra caution and guardrails
 

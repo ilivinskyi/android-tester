@@ -10,8 +10,8 @@ Runs one test session on an Android device and ends with the standard report.
 Start from the user's request (in Claude Code, the command arguments: $ARGUMENTS).
 
 **REQUIRED:** follow the `android-human-input` skill for every UI action, and use the `android-device` skill for `adt` commands.
-`adt` is the android-tester command line: the `adt` command when it is installed (`uv tool install`, see the README), otherwise, in the Claude Code plugin, `uv run --script "${CLAUDE_PLUGIN_ROOT}/scripts/adt.py"`.
-Templates referenced below are in this skill's own `templates/` folder.
+`adt` is the mobile-tester Android command line: the `adt` command when it is installed (`uv tool install`, see the README), otherwise, in the Claude Code plugin, `uv run --script "${CLAUDE_PLUGIN_ROOT}/scripts/adt.py"`.
+Shared files (onboarding, interview, modes, auto mode, report standard, templates) are in the `mobile-tester-shared` skill, next to this one: `../mobile-tester-shared/`. In them, `dt` means `adt`.
 Questions to the user: use your agent's question tool when it has one (AskUserQuestion in Claude Code), otherwise ask in chat as a short numbered list with the recommended option first.
 
 ## Session flow
@@ -21,20 +21,20 @@ Work through these phases in order and keep the user's task list in step with th
 ### 1. Project setup
 
 1. Run `adt doctor`. Stop and help the user if no device is ready.
-2. Read `.android-tester/config.yaml` in the project.
-   If it doesn't exist, run onboarding first: [onboarding.md](onboarding.md).
-3. Note whether auto mode is on. In auto mode, apply the defaults from [auto-mode.md](auto-mode.md) instead of asking at the decision points listed there.
+2. Read `.mobile-tester/config.yaml` in the project.
+   If it doesn't exist, run onboarding first: [onboarding.md](../mobile-tester-shared/onboarding.md).
+3. Note whether auto mode is on. In auto mode, apply the defaults from [auto-mode.md](../mobile-tester-shared/auto-mode.md) instead of asking at the decision points listed there.
    Guardrails are never automatic.
 
 ### 2. Session interview
 
-Ask the questions in [session-interview.md](session-interview.md), skipping what the arguments or the config already answer.
+Ask the questions in [session-interview.md](../mobile-tester-shared/session-interview.md), skipping what the arguments or the config already answer.
 End with a one-paragraph session plan (charter, mode, device, build, start state, time box, evidence) and wait for the user's go, unless auto mode is on.
 
 ### 3. Preparation
 
 1. Device: `adt -s SERIAL info`. Check it matches the device inventory; note `personal: true` devices.
-2. App profile: read `.android-tester/apps/<package>/profile.yaml` (above all its `about` block) and `notes.md`, and list the open known issues with `adt issues list --package PKG`. Quirks and known issues save time: a known issue found again is linked, not re-reported.
+2. App profile: read `.mobile-tester/apps/<package>/profile.yaml` (above all its `about` block) and `notes.md`, and list the open known issues with `adt issues list --package PKG`. Quirks and known issues save time: a known issue found again is linked, not re-reported.
 3. Build:
    - Installed: compare `adt app info PKG` with the version the user expects.
    - From a file: `adt apk inspect FILE`. Do not install when the signers differ between splits, the signer differs from `expected_signer_sha256` in the profile, the package name doesn't match, or notable permissions don't fit the app. Report what you found and ask.
@@ -42,7 +42,7 @@ End with a one-paragraph session plan (charter, mode, device, build, start state
 4. Hooks: run `adt hook setup --package PKG` when the profile defines it.
 5. Start the session: `adt session start --package PKG --mode MODE --charter "..." [--ticket KEY] --record --logcat`.
    Without `--dir` the run folder is `<reports dir from config.yaml>/<YYYY-MM-DD>-<app>-<mode>[-<ticket>]`, a new one per session; it prints the folder.
-   It also fills the title and the tester from the profile and config. Then fill `session.json` with ticket details, time box and app install source (see [report-standard.md](report-standard.md)).
+   It also fills the title and the tester from the profile and config. Then fill `session.json` with ticket details, time box and app install source (see [report-standard.md](../mobile-tester-shared/report-standard.md)).
 6. Ask whether to turn on "Show taps" for this recording (always ask; on a phone pass the approval to `adt touches on --approval`).
 7. Performance baseline (unless the user turned it off): `adt perf startup PKG` (three cold starts, each after a force-stop), then `adt perf frames PKG --reset`.
 8. Bring the app to the start state (below). This also logs in when the profile's login needs it.
@@ -70,12 +70,12 @@ Follow the mode guide:
 
 | Mode | Guide |
 |---|---|
-| explore | [modes/explore.md](modes/explore.md) |
-| test-case | [modes/test-case.md](modes/test-case.md) |
-| repro | [modes/repro.md](modes/repro.md) |
-| ui-review | [modes/ui-review.md](modes/ui-review.md) |
-| retest | [modes/retest.md](modes/retest.md) |
-| memory | [modes/memory.md](modes/memory.md) |
+| explore | [modes/explore.md](../mobile-tester-shared/modes/explore.md) |
+| test-case | [modes/test-case.md](../mobile-tester-shared/modes/test-case.md) |
+| repro | [modes/repro.md](../mobile-tester-shared/modes/repro.md) |
+| ui-review | [modes/ui-review.md](../mobile-tester-shared/modes/ui-review.md) |
+| retest | [modes/retest.md](../mobile-tester-shared/modes/retest.md) |
+| memory | [modes/memory.md](../mobile-tester-shared/modes/memory.md) |
 
 Judging behaviour:
 - Expected behaviour comes from the app profile's `about` (description, main flows, rules, glossary), the ticket, and what the app itself says on screen. Nothing else defines "correct".
@@ -89,7 +89,7 @@ Problems outside the charter (another screen, an unrelated feature):
   Note what you saw and where; don't spend session time reproducing them unless they block the charter.
 
 While testing:
-- Write each finding into `findings.json` as soon as it's verified, not at the end. Fields and severity scale: [report-standard.md](report-standard.md).
+- Write each finding into `findings.json` as soon as it's verified, not at the end. Fields and severity scale: [report-standard.md](../mobile-tester-shared/report-standard.md).
 - Before writing a finding, read the raw source that proves it (hierarchy XML, logcat, screenshot). If a finding turns out wrong, set it to Retracted with the reason; never delete it.
 - Save evidence with `adt observe --name <id>-<what>` and note the action log time for video clips.
 - A finding that matches an open known issue (same behaviour in the same area): set `"known_issue": "K-n"` and keep it short; don't re-investigate. It shows as "seen again".
@@ -102,9 +102,9 @@ While testing:
 1. Performance (if measured): `adt perf frames PKG` and `adt perf memory PKG` before ending the session. Then `adt logcat summary`: the app's log issues of the whole session, grouped, for the report's "App log" section.
 2. `adt session end`: it stops capture and builds the report right away when `adt report check` passes (otherwise it lists what to fix). Run the teardown hook if the profile has one, and `adt touches off` if you turned it on.
 3. Cut one clip per bug: `adt clip --from <t of first repro step> --to <t of last> --out videos/<id>.mp4`, and add it to the finding's evidence.
-4. `adt issues sync RUN --package PKG`: new bugs and accessibility findings join the app's known issues (each with a regression test case draft in `.android-tester/apps/<package>/tests/`), and known issues seen again get a sighting.
+4. `adt issues sync RUN --package PKG`: new bugs and accessibility findings join the app's known issues (each with a regression test case draft in `.mobile-tester/apps/<package>/tests/`), and known issues seen again get a sighting.
 5. `adt report check RUN`, fix every problem, then `adt report build RUN` (again: the steps above changed findings). Open `index.html` in a browser (the browser pane in Claude Code) and look at it; in auto mode `report_build` decides, and it never waits for a question.
-6. For each Unconfirmed finding, offer the manual reproduction in [modes/repro.md](modes/repro.md).
+6. For each Unconfirmed finding, offer the manual reproduction in [modes/repro.md](../mobile-tester-shared/modes/repro.md).
 7. Offer Jira: each finding page has Copy title and Copy for Jira buttons, the `bugs/<id>.md` files are paste-ready, and `findings.csv` imports them all through Jira's CSV import. Create issues through the Atlassian connector only when the user explicitly approves each one.
 8. Append what you learned about the app (screen map, quirks) to the app's `notes.md`, after telling the user.
 9. Answer with: where the report is, the findings by severity, known issues seen again, unconfirmed items, and what was not covered.

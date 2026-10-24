@@ -1,10 +1,11 @@
 # /// script
 # requires-python = ">=3.11"
 # ///
-"""Example check: list app-specific error lines from the session's logcat.
+"""Example check (Android): list app-specific error lines from the session's logcat.
 
-Copy to <project>/.android-tester/apps/<package>/checks/logcat-errors.py and adapt PATTERNS.
+Copy to <project>/.mobile-tester/apps/<package>/checks/logcat-errors.py and adapt PATTERNS.
 Runs via `adt check logcat-errors --package <package>`; exit code 1 means "something to look at".
+On iOS the same idea works on the session's logs/app.log (`idt session start --log`).
 """
 
 import os
@@ -14,7 +15,7 @@ from pathlib import Path
 
 PATTERNS = [r" E [\w.]+: ", r"Exception", r"HTTP [45]\d\d"]
 
-log = Path(os.environ.get("ADT_RUN_DIR", ".")) / "logs" / "logcat.txt"
+log = Path(os.environ.get("MT_RUN_DIR", ".")) / "logs" / "logcat.txt"
 if not log.is_file():
     sys.exit("no logcat.txt in the active session")
 

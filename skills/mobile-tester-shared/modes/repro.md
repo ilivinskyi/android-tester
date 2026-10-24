@@ -1,5 +1,7 @@
 # Repro mode: reproduce a reported bug
 
+`dt` is the platform's device tool: `adt` on Android, `idt` on iOS.
+
 Goal: a reliable answer to "does this bug happen, under which exact conditions, and can a person hit it?"
 
 ## 1. Understand the report
@@ -10,7 +12,7 @@ Goal: a reliable answer to "does this bug happen, under which exact conditions, 
 
 ## 2. Set up a known state
 
-1. Reset to the start state as in [Start state](../SKILL.md#start-state), before the first attempt and again before **every** attempt.
+1. Reset to the start state as in "Start state" in the entry skill (`android-native-tester` or `ios-native-tester`), before the first attempt and again before **every** attempt.
    Without it, what one attempt leaves behind changes the next, and "N of M" stops meaning anything.
 2. Add what the ticket needs on top of the reset (data, settings) with `--fast` setup steps, and record those in `setup_steps_fast`.
 3. Check the state you depend on (data present or absent, logged in or not, a setting or feature flag) with a screenshot before the first step.
@@ -18,9 +20,9 @@ Goal: a reliable answer to "does this bug happen, under which exact conditions, 
 
 ## 3. Reproduce in human mode
 
-1. Perform the reported steps with `adt` in human mode. Repro steps never use `--fast`.
-2. Observe with `adt observe --image-only` between steps; use full observes only when you need element indices.
-   Full observes turn on the accessibility layer, which can change app behaviour.
+1. Perform the reported steps with `dt` in human mode. Repro steps never use `--fast`.
+2. Observe with `dt observe --image-only` between steps; use full observes only when you need element indices.
+   Full observes read the UI through the accessibility layer, which can change app behaviour (WebViews on Android).
 3. Note the action log `t` of the first and last step of each attempt.
 4. Repeat until you can state N of M (at least 3 attempts when it reproduces, 5 when it doesn't), resetting before each attempt.
 
@@ -34,12 +36,13 @@ When it reproduces, find what's necessary:
 ## 5. Confirm with a person
 
 A bug reproduced only by automation is **Unconfirmed**.
+On an iOS simulator the person reproduces it with the mouse in Simulator.app (clicks are touches), or on a real iPhone when the team has one.
 Manual-repro protocol (offer it; in auto mode `unconfirmed_repro` decides when):
-1. Reset to the start state as in [Start state](../SKILL.md#start-state) and tell the user exactly what is on screen.
-2. `adt record start --out RUN/videos/<id>-manual.mp4`.
+1. Reset to the start state as in "Start state" in the entry skill (`android-native-tester` or `ios-native-tester`) and tell the user exactly what is on screen.
+2. `dt record start --out RUN/videos/<id>-manual.mp4`.
 3. Give the user the steps and ask them to perform them by hand (offer the outcomes: reproduced / not reproduced / something else).
-4. `adt record stop`; compare their run with the automated one frame by frame (`ffmpeg` frames at the step times).
-   Record the outcome with `adt report confirm RUN <id> --result ... --tries N/M --by "<their name>"`.
+4. `dt record stop`; compare their run with the automated one frame by frame (`ffmpeg` frames at the step times).
+   Record the outcome with `dt report confirm RUN <id> --result ... --tries N/M --by "<their name>"`.
 5. If they didn't reproduce it, list every difference between their run and the automated runs, and test each one as a variant.
    If the only difference left is the input source, keep it Unconfirmed and say so in `notes`.
    Offer a hybrid run (some steps automated, some by hand) to find the step where injected input matters.

@@ -399,6 +399,9 @@ def device_props(adb: Adb) -> dict:
         "sdk": adb.getprop("ro.build.version.sdk"),
         "emulator": adb.serial.startswith("emulator-") or adb.getprop("ro.kernel.qemu") == "1",
     }
+    # The report's neutral keys (core/report_text.py device_facts); the raw ones stay for tools and old readers.
+    props["os"] = f"Android {props['android']} (API {props['sdk']})"
+    props["kind"] = "emulator" if props["emulator"] else "physical"
     size = adb.shell("wm", "size")
     sizes = dict(re.findall(r"(Physical|Override) size: (\d+x\d+)", size))
     props["screen"] = sizes.get("Override") or sizes.get("Physical", "")

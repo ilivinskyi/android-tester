@@ -2,7 +2,7 @@
 index.html (the finding list), bugs/<id>.html (one page per finding), bugs/<id>.md (Jira drafts)
 and findings.csv (Jira bulk import).
 
-The field definitions live in skills/android-native-tester/report-standard.md; keep both in sync.
+The field definitions live in skills/mobile-tester-shared/report-standard.md; keep both in sync.
 Pages are rendered in report_html.py, the text formats in report_text.py.
 """
 

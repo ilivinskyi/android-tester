@@ -1,5 +1,7 @@
 # Test-case mode: run written test cases
 
+`dt` is the platform's device tool: `adt` on Android, `idt` on iOS.
+
 Goal: execute given test cases step by step and report pass/fail per step, with findings for every failure.
 
 ## Input
@@ -11,7 +13,7 @@ If it's still unclear, ask before running it, or in auto mode choose the most pl
 
 ## Run each case
 
-1. Reset to the start state as in [Start state](../SKILL.md#start-state), then establish the case's preconditions with `--fast` setup steps, and verify them with a screenshot.
+1. Reset to the start state as in "Start state" in the entry skill (`android-native-tester` or `ios-native-tester`), then establish the case's preconditions with `--fast` setup steps, and verify them with a screenshot.
 2. For each step:
    - Perform it in human mode.
    - Check its expected result: screenshot plus the hierarchy when text or state matters. Never assume a step passed because the command succeeded.

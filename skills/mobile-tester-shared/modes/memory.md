@@ -1,5 +1,7 @@
 # Memory mode: look for memory leaks
 
+Android only for now (`adt`); on iOS, tell the user this mode isn't available yet and offer explore mode on the same flows instead.
+
 Goal: for each chosen flow, a clear answer to "does repeating it keep memory growing?", with numbers.
 
 A leak in an Android app usually means screens stay alive after they close.
@@ -14,7 +16,7 @@ PSS (the app's share of memory) grows too, but it also grows for harmless caches
 
 ## Run each flow
 
-1. Reset to the start state as in [Start state](../SKILL.md#start-state) and open the screen where the cycle starts.
+1. Reset to the start state as in "Start state" in the entry skill (`android-native-tester` or `ios-native-tester`) and open the screen where the cycle starts.
 2. Baseline: `adt perf memory PKG --flow "<flow name>"` (it waits 5 s so the app can go idle first).
 3. Repeat the cycle in human mode at least 5 times. After each repetition, back at the start screen: `adt perf memory PKG --flow "<flow name>"`.
 4. `adt perf leak PKG --flow "<flow name>"`: "suspected leak" lists what kept growing, "no leak seen" means nothing grew steadily.

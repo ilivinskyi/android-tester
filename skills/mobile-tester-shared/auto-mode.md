@@ -1,6 +1,8 @@
 # Auto mode
 
-With `auto_mode.enabled: true` in `.android-tester/config.yaml`, the skill applies the defaults below instead of stopping to ask.
+`dt` is the platform's device tool: `adt` on Android, `idt` on iOS.
+
+With `auto_mode.enabled: true` in `.mobile-tester/config.yaml`, the skill applies the defaults below instead of stopping to ask.
 Every decision taken automatically is written to the session's `logs/decisions.md` (time, decision, value, why it came up), so the report can show what was decided without the user.
 With auto mode off, the skill asks at each of these points.
 
@@ -8,7 +10,7 @@ With auto mode off, the skill asks at each of these points.
 
 | Key | Comes up when | Default | Options |
 |---|---|---|---|
-| `keyboard_fallback` | `adt type` can't find a key (other keyboard, language, emoji) | `keyevents` | `ask`, `keyevents` (one key event per character, noted in the finding), `bulk` |
+| `keyboard_fallback` | `adt type` can't find a key (other keyboard, language, emoji). Android only: on iOS a missing key always asks | `keyevents` | `ask`, `keyevents` (one key event per character, noted in the finding), `bulk` |
 | `app_permission_prompts` | The app under test asks for notifications, location, camera... | `deny` | `deny`, `allow`, `ask`. Testing the denied path is the stricter test |
 | `consent_banners` | Cookie or tracking consent in the app | `reject_non_essential` | `reject_non_essential`, `ask`. Accepting consent is never automatic |
 | `login` | The app offers login | `secrets_then_guest` | `secrets_then_guest`, `guest`, `ask` |
@@ -18,7 +20,7 @@ With auto mode off, the skill asks at each of these points.
 | `ambiguous_target` | Several elements match the step's target | `pick_and_log` | `pick_and_log` (most plausible visible one, logged), `ask` |
 | `state_reset` | Before the session and each rerun (repro attempt, test case, retested issue) | `profile_strategy` | `profile_strategy` (the profile's `reset.strategy`), `restart`, `ask`. Clearing app data on a personal device still asks, once per session |
 | `time_box_end` | The time box runs out | `wrap_up` | `wrap_up`, `ask` (offer to extend) |
-| `show_taps_emulator` | Recording on an emulator | `ask` | `ask`, `on`. On physical devices "Show taps" always asks |
+| `show_taps_emulator` | Recording on an Android emulator | `ask` | `ask`, `on`. On physical devices "Show taps" always asks; iOS simulators have no such setting |
 | `report_build` | End of session | `build_and_open` | `build_and_open`, `ask` |
 
 ## Never automatic

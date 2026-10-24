@@ -1,6 +1,6 @@
 # adt command reference
 
-`adt` is the android-tester command line: the `adt` command when it is installed (`uv tool install`, see the README), otherwise, in the Claude Code plugin, `uv run --script "${CLAUDE_PLUGIN_ROOT}/scripts/adt.py"`.
+`adt` is the mobile-tester Android command line: the `adt` command when it is installed (`uv tool install`, see the README), otherwise, in the Claude Code plugin, `uv run --script "${CLAUDE_PLUGIN_ROOT}/scripts/adt.py"`.
 
 Global options (before or after the command):
 
@@ -8,7 +8,7 @@ Global options (before or after the command):
 |---|---|
 | `-s SERIAL` | device (otherwise `ANDROID_SERIAL`, otherwise the only ready device) |
 | `--fast` | instant adb input without pacing or checks. Setup and reset steps only |
-| `--pace human\|slow` | human (default) or slow pacing; also `ADT_PACE` |
+| `--pace human\|slow` | human (default) or slow pacing; also `MT_PACE` |
 | `--no-verify` | skip the did-the-screen-change check |
 
 ## Setup
@@ -38,7 +38,7 @@ Element line format:
 - `sr-only`: text too small to see, there for screen readers only (e.g. a value whose visible version is drawn as an image). Read it, don't tap it.
 - `RISK:` is set for action-like wording (short labels, not questions or sentences) and resource ids.
 
-State files per device under `ADT_HOME` (default `./.adt/<serial>/`): `latest.json`, `latest.xml`, `latest.png`, `latest_preview.jpg`, `device.json` (cached facts).
+State files per device under `MT_HOME` (default `.mobile-tester/state/<serial>/` in the project): `latest.json`, `latest.xml`, `latest.png`, `latest_preview.jpg`, `device.json` (cached facts).
 
 ## Acting (human mode by default)
 
@@ -83,7 +83,7 @@ Taps on an element go to a random point near its center that no other control co
 
 | Command | Notes |
 |---|---|
-| `session start [--dir RUN] [--package P] [--mode explore\|test-case\|repro\|ui-review\|retest\|memory] [--charter C] [--ticket T] [--record] [--logcat]` | creates `screenshots/ videos/ logs/ bugs/`, `session.json`, `findings.json`; actions log to `logs/actions.jsonl`. Without `--dir`: a new folder `<reports dir from .android-tester/config.yaml>/<date>-<app>-<mode>[-<ticket>]`. Fills `title` and `tester` from the profile and config when missing |
+| `session start [--dir RUN] [--package P] [--mode explore\|test-case\|repro\|ui-review\|retest\|memory] [--charter C] [--ticket T] [--record] [--logcat]` | creates `screenshots/ videos/ logs/ bugs/`, `session.json`, `findings.json`; actions log to `logs/actions.jsonl`. Without `--dir`: a new folder `<reports dir from .mobile-tester/config.yaml>/<date>-<app>-<mode>[-<ticket>]`. Fills `title` and `tester` from the profile and config when missing |
 | `session end [--discard-video] [--no-report]` | stops recording and logcat started by the session, then builds the report when `report check` passes (or lists the problems) |
 | `session status` | active run folder |
 | `record start --out FILE.mp4` / `record stop [--discard]` | 3-minute chunks joined with ffmpeg; writes `FILE.timeline.json` |
@@ -92,11 +92,11 @@ Taps on an element go to a random point near its center that no other control co
 | `logcat crashes [--package PKG]` | crash buffer + FATAL/ANR lines since the last clear |
 | `logcat summary [--package PKG] [--run RUN]` | the app's errors, caught exceptions, network failures, StrictMode, long frame drops and out-of-memory lines in the session log, grouped and most serious first; saved as `log_summary` for the report |
 | `touches on --approval "..."` / `touches off` | "Show taps" markers in recordings; a system setting, needs approval on phones |
-| `hook NAME --package P [-- ARGS]` | runs `.android-tester/apps/P/hooks/NAME.(py\|sh\|ps1)` |
-| `check NAME --package P [-- ARGS]` | runs `.android-tester/apps/P/checks/NAME.(py\|sh\|ps1)` |
+| `hook NAME --package P [-- ARGS]` | runs `.mobile-tester/apps/P/hooks/NAME.(py\|sh\|ps1)` |
+| `check NAME --package P [-- ARGS]` | runs `.mobile-tester/apps/P/checks/NAME.(py\|sh\|ps1)` |
 | `report check RUN` / `report build RUN` | validate / render `index.html` (finding list), `bugs/<id>.html` (one page per finding), `bugs/<id>.md` (Jira drafts) and `findings.csv` (Jira CSV import) |
 | `report confirm RUN ID --result reproduced\|not-reproduced --by NAME [--tries N/M] [--note] [--device] [--build]` | record a person's manual check in the finding's history, update its manual count and status, rebuild the report |
-| `issues list --package P [--status open\|fixed\|wont-fix\|duplicate\|all] [--json]` | the app's known issues (`.android-tester/apps/P/known-issues.json`) |
+| `issues list --package P [--status open\|fixed\|wont-fix\|duplicate\|all] [--json]` | the app's known issues (`.mobile-tester/apps/P/known-issues.json`) |
 | `issues sync RUN --package P` | register a run's new bugs and accessibility findings (with regression test case drafts in `tests/`), record sightings of known issues, reopen fixed ones found again |
 | `issues set K-n --package P --status fixed [--build] [--run] [--note]` | change an issue's status (e.g. after a retest) |
 | `perf startup PKG [--runs 3]` | median cold start (force-stops the app first) |
@@ -104,7 +104,7 @@ Taps on an element go to a random point near its center that no other control co
 | `perf memory PKG [--flow NAME] [--settle 5]` | PSS, RSS and live objects (Activities, windows, app contexts, Views, WebViews); all perf commands save into the active session's `performance`. With `--flow`: a leak-check sample of that flow (baseline, then one after each cycle), taken after `--settle` seconds |
 | `perf leak PKG [--flow NAME]` | leak verdict per flow from its samples: "suspected leak" when object counts never drop and grow (Activities by 2+, Views by 100+) or PSS grows steadily by 10% and 8 MB; needs a baseline and 3+ cycles |
 
-Hook and check scripts receive `ANDROID_SERIAL`, `ADB`, `ADT` (command line for adt), `ADT_PACKAGE`, `ADT_APP_DIR`, `ADT_RUN_DIR`, and `ADT_SECRETS` when `secrets.local.yaml` exists.
+Hook and check scripts receive `ANDROID_SERIAL`, `ADB`, `ADT` (command line for adt), `MT_PLATFORM` (`Android`), `MT_PYTHON` and `MT_SCRIPT` (to call adt from Python), `MT_PACKAGE`, `MT_APP_DIR`, `MT_RUN_DIR`, and `MT_SECRETS` when `secrets.local.yaml` exists.
 Python scripts run with `uv run --script`, so they may declare their own dependencies (PEP 723).
 
 ## Exit codes
