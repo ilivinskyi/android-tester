@@ -5,7 +5,7 @@ Decisions from the initial interview (2026-10-23), revised after the Jumbo sessi
 ## Scope
 
 - Target: any APK / store app on Android; on iOS any simulator build, and on a real device any installed app or signed build; black-box (no source access assumed).
-- Devices: Android phones over USB and emulators; iOS simulators, and real iPhones and iPads over USB or Wi-Fi.
+- Devices: Android phones over USB and emulators; iOS simulators, and real iPhones and iPads over USB or Wi-Fi (not yet tried on hardware).
 - Packaging: Claude Code plugin `mobile-tester` (this repo, still named android-tester on GitHub), skills in the open Agent Skills format.
 - iOS design and decisions: [superpowers/specs/2026-10-24-mobile-tester-design.md](superpowers/specs/2026-10-24-mobile-tester-design.md).
 
@@ -142,7 +142,8 @@ Modes of `android-native-tester` (guides in its folder, not separate skills): ex
 
 ## Open work
 
-- Not yet verified on an Android device or emulator: the report redesign, `adt app reset`, session-start defaults, the log and memory checks, and everything after the split into `core` and `android`.
+- Not yet verified on Android after the split: Show taps (`adt touches`), memory mode, and APK inspection or install on a real phone (an emulator session on Contacts covered the rest on 2026-10-24).
 - Test-case documentation of the plugin's own steps in `docs/testcases/`, grouped by functionality.
-- iOS: real iPhones, performance and memory checks, `.ipa` inspection.
+- iOS: verify real-device support on a device (whether tunnel connections pass the runner's filter, and the devicectl output formats for the process list, the crash-log list and the screen-record start message).
+- iOS: app log streaming on devices, performance and memory checks, `.ipa` inspection.
 - Planned for both platforms: an exploration coverage map from screen fingerprints, a selector cache for test cases, a monkey/stress mode.

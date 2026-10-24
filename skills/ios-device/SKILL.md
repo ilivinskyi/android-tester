@@ -81,6 +81,7 @@ Exit codes: 4 not found or covered, 5 guardrail block, 6 decision needed (e.g. a
 
 ## Known limits
 
+- Real-device support is new and not yet tried on hardware: if a step fails in a way these instructions don't cover, tell the user what failed instead of working around it.
 - Real devices: no app log streaming yet (crash reports and recordings work); `.ipa` files must be unzipped to the `.app` inside first; a free personal team's runner build expires after 7 days.
 - Over Wi-Fi a device is slower than over USB: every action takes screenshots through the tunnel.
 - Each key press takes about half a second (XCUITest waits for the app to go idle), so long texts type slowly.

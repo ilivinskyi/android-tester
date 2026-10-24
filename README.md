@@ -12,7 +12,8 @@ They drive the device with human-like input, check every step, record evidence, 
 /ios-native-tester explore com.example.app
 ```
 
-iOS support is new: it works on simulators and on real iPhones and iPads, and has no performance or memory measurements yet.
+iOS support is new: it works on simulators, and has no performance or memory measurements yet.
+Support for real iPhones and iPads is newer still and has not been tried on hardware yet.
 
 ## Why this exists
 
@@ -178,6 +179,7 @@ The first `idt` command that touches the screen builds the XCUITest runner (abou
 
 ## Prepare a real iPhone or iPad
 
+This support is new and has not been tried on a real device yet; expect rough edges and tell us what you hit.
 A real device runs the same XCUITest runner, signed with your Apple development team.
 Every step here is yours: the tester tells you what is missing (`idt doctor` prints a `to do:` line per device) and waits.
 

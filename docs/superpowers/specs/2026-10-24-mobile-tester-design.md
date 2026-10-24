@@ -30,6 +30,7 @@ Everything that isn't about the device (report, finding lifecycle, sessions, gua
 ## Non-goals (for now)
 
 - Real iPhones (needs a signed runner and a tunnel).
+  Added afterwards on this branch through devicectl and CoreDevice's tunnel (see the spec's "iOS (real devices)"), not yet tried on hardware.
 - iOS performance (`xctrace`, `leaks`), memory mode and the app-log summary on iOS.
 - `.ipa` inspection.
 - Renaming the GitHub repository and publishing.
