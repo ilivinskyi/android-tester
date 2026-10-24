@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import re
 
-from .hierarchy import Element
+from .ui import Element
 
 
 def screen_fingerprint(package: str, activity: str, elements: list[Element]) -> str:

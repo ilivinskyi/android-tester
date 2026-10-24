@@ -8,10 +8,9 @@ from __future__ import annotations
 
 import io
 import time
+from collections.abc import Callable
 
 from PIL import Image, ImageChops
-
-from .adb import Adb
 
 # Half the resolution of a typical phone: a changed digit in a quantity stepper still covers
 # dozens of pixels, while comparing stays fast.
@@ -24,8 +23,7 @@ _MIN_CHANGED = 12
 _STATUS_BAR = 0.05
 
 
-def signature(adb: Adb) -> Image.Image:
-    png = adb.exec_out("screencap", "-p", timeout=20)
+def signature(png: bytes) -> Image.Image:
     image = Image.open(io.BytesIO(png)).convert("L")
     return image.resize(SIGNATURE_SIZE, Image.BILINEAR)
 
@@ -43,16 +41,18 @@ def differs(a: Image.Image, b: Image.Image) -> bool:
     return not (width <= 3 and height >= 3 * width)
 
 
-def wait_stable(adb: Adb, timeout: float = 5.0, interval: float = 0.25) -> tuple[Image.Image, bool]:
+def wait_stable(grab: Callable[[], bytes], timeout: float = 5.0,
+                interval: float = 0.25) -> tuple[Image.Image, bool]:
     """Poll until two consecutive screenshots match. Returns the last signature and whether it settled.
 
+    `grab` returns a PNG of the screen, from whatever the platform offers.
     Spinners and video never settle; the caller gets the last frame after the timeout.
     """
     deadline = time.monotonic() + timeout
-    previous = signature(adb)
+    previous = signature(grab())
     while time.monotonic() < deadline:
         time.sleep(interval)
-        current = signature(adb)
+        current = signature(grab())
         if not differs(previous, current):
             return current, True
         previous = current

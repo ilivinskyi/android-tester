@@ -2,7 +2,7 @@
 
 import pytest
 
-from adtlib import keyboard
+from mobiletester.android import keyboard
 
 IME = "com.google.android.inputmethod.latin"
 LAYERS = {"letters": "gboard_letters.xml", "symbols": "gboard_symbols.xml", "more": "gboard_more_symbols.xml"}

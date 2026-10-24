@@ -1,4 +1,4 @@
-from adtlib import apps
+from mobiletester.android import apps
 
 QUERY_ACTIVITIES = """27 activities found:
   com.android.chrome/com.google.android.apps.chrome.Main

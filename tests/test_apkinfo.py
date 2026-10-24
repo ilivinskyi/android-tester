@@ -3,7 +3,7 @@ import struct
 import zipfile
 from pathlib import Path
 
-from adtlib import apkinfo
+from mobiletester.android import apkinfo
 
 FIXTURES = Path(__file__).parent / "fixtures"
 

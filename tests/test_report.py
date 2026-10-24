@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from adtlib import report, report_html, report_text
+from mobiletester.core import report, report_html, report_text
 
 SESSION = {
     "title": "Notes app Android - exploratory test", "mode": "explore", "charter": "Editing and sync",

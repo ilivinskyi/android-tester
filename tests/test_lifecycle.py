@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from adtlib import lifecycle
+from mobiletester.core import lifecycle
 
 SESSION = {"started": "2026-10-23T13:02:00+02:00", "app": {"versionName": "1.0", "versionCode": "10"},
            "device": {"model": "Pixel 7a"}}

@@ -6,7 +6,8 @@ import difflib
 import re
 from dataclasses import dataclass
 
-from . import apkinfo, state
+from ..core import state
+from . import apkinfo
 from .adb import Adb
 
 _COMPONENT_RE = re.compile(r"^\s*([\w.]+)/[\w.$]+\s*$")

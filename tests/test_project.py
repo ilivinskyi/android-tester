@@ -1,6 +1,6 @@
 from datetime import date
 
-from adtlib import project, session
+from mobiletester.core import project, session
 
 DAY = date(2026, 10, 23)
 

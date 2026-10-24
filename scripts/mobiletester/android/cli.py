@@ -18,23 +18,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import (
-    apkinfo,
-    applog,
-    apps,
-    capture,
-    device,
-    entry_script,
-    hierarchy,
-    keyboard,
-    lifecycle,
-    perf,
-    project,
-    report,
-    screen,
-    session,
-    state,
-)
+from ..core import lifecycle, project, report, screen, session, state
+from . import apkinfo, applog, apps, capture, device, entry_script, hierarchy, keyboard, perf
 from .adb import Adb, AdbError, DeviceError, find_adb, list_devices, run_adb
 from .human import Driver, Outcome
 
@@ -396,7 +381,7 @@ def cmd_app(args, adb: Adb) -> int:
 def _app_reset(args, adb: Adb) -> int:
     started = datetime.now().astimezone()
     steps, foreground = device.app_reset(adb, args.package, args.level, timeout=args.timeout)
-    _, settled = screen.wait_stable(adb, timeout=8)
+    _, settled = screen.wait_stable(lambda: adb.exec_out("screencap", "-p", timeout=20), timeout=8)
     session.log_action(adb.serial, {"action": "app-reset", "mode": "setup", "package": args.package,
                                     "level": args.level, "steps": steps}, started)
     session.note_fast_step(adb.serial, f"reset ({args.level})")

@@ -2,7 +2,7 @@
 
 from PIL import Image, ImageDraw
 
-from adtlib import screen
+from mobiletester.core import screen
 
 W, H = screen.SIGNATURE_SIZE
 

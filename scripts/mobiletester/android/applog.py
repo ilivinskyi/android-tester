@@ -11,7 +11,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import state
+from ..core import state
 from .adb import Adb
 
 # `logcat -v threadtime`: "10-23 15:04:31.120  4321  4330 E Tag: message"

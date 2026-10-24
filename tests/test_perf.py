@@ -1,4 +1,4 @@
-from adtlib import perf
+from mobiletester.android import perf
 
 # Captured from a Pixel 7a on Android 17.
 GFXINFO = """Total frames rendered: 465

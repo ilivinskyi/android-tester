@@ -1,17 +1,21 @@
-"""Turning a uiautomator XML dump into a compact list of elements an agent can act on."""
+"""The platform-neutral model of a screen: elements with bounds, labels and flags, and how a finger finds them.
+
+Each platform turns its own UI dump into a Snapshot (android/hierarchy.py, ios/hierarchy.py); hit testing,
+human tap points and text search work the same on both.
+"""
 
 from __future__ import annotations
 
 import random
 import re
-import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, field
 
 from . import guard
 
 _BOUNDS_RE = re.compile(r"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]")
 _MAX_LABEL = 80
-_MIN_VISIBLE_PX = 12
+# Rows cut off at the screen edge to a sliver can't be tapped reliably; scroll them in first.
+MIN_VISIBLE_PX = 12
 
 
 @dataclass(frozen=True)
@@ -159,125 +163,12 @@ class Snapshot:
         raise LookupError(f"no element [{index}] in the last observation")
 
 
-def _bool(node: ET.Element, attr: str) -> bool:
-    return node.get(attr) == "true"
-
-
-def _short_class(cls: str) -> str:
-    return cls.rsplit(".", 1)[-1] or "View"
-
-
-def _own_label(node: ET.Element) -> str:
-    return (node.get("text") or "").strip() or (node.get("content-desc") or "").strip()
-
-
-def _is_interactive(node: ET.Element) -> bool:
-    cls = node.get("class", "")
-    return _is_editable(cls) or any(_bool(node, a) for a in ("clickable", "long-clickable", "checkable", "scrollable"))
-
-
-def _is_editable(cls: str) -> bool:
-    return "EditText" in cls or "AutoCompleteTextView" in cls
-
-
-def _descendant_label(node: ET.Element, limit: int = 3) -> str:
-    """Containers like list rows are clickable while their text lives in child TextViews.
-
-    Interactive descendants are listed on their own, so their texts don't belong to this label
-    (a toolbar must not be called "Share | Close tab").
-    """
-    found: list[str] = []
-
-    def collect(parent: ET.Element) -> None:
-        for child in parent.findall("node"):
-            if len(found) >= limit or _is_interactive(child):
-                continue
-            label = _own_label(child)
-            if label and label not in found:
-                found.append(label)
-            collect(child)
-
-    collect(node)
-    return " | ".join(found)
-
-
-def _truncate(text: str) -> str:
+def truncate(text: str) -> str:
     text = " ".join(text.split())
     return text if len(text) <= _MAX_LABEL else text[: _MAX_LABEL - 1] + "…"
 
 
-def parse(xml: str, display: tuple[int, int] | None = None) -> Snapshot:
-    """`display` is the natural (rotation 0) display size from `wm size`. Without it the screen size is
-    guessed from the dumped window, which is wrong for dialogs and other non-fullscreen windows."""
-    root = ET.fromstring(xml.strip().encode("utf-8"))
-    rotation = int(root.get("rotation", "0") or 0)
-    top_nodes = root.findall("node")
-    if display:
-        w, h = display
-        screen = Bounds(0, 0, h, w) if rotation in (1, 3) else Bounds(0, 0, w, h)
-    else:
-        screen = Bounds(0, 0, 0, 0)
-        for node in top_nodes:
-            b = Bounds.parse(node.get("bounds", ""))
-            screen = Bounds(0, 0, max(screen.right, b.right), max(screen.bottom, b.bottom))
-    package = top_nodes[0].get("package", "") if top_nodes else ""
-
-    elements: list[Element] = []
-
-    def visit(node: ET.Element, depth: int, inside_interactive: bool, z: list[int]) -> None:
-        bounds = Bounds.parse(node.get("bounds", "")).clip(screen)
-        cls = node.get("class", "")
-        editable = _is_editable(cls)
-        interactive = _is_interactive(node)
-        own_label = _own_label(node)
-        # Rows cut off at the screen edge to a sliver can't be tapped reliably; scroll them in first.
-        tappable = bounds.width >= _MIN_VISIBLE_PX and bounds.height >= _MIN_VISIBLE_PX
-        # Text of any size is information, even when it is only there for screen readers.
-        readable = bounds.area > 0
-        # A plain TextView inside a clickable row is already described by the row's label.
-        keep = (interactive and tappable) or (not interactive and readable and own_label and not inside_interactive)
-        scrollable = _bool(node, "scrollable")
-        if keep:
-            # A list's label would just repeat its rows, which are listed on their own.
-            label = own_label or (_descendant_label(node) if interactive and not scrollable else "")
-            el = Element(
-                index=len(elements),
-                cls=_short_class(cls),
-                text=(node.get("text") or "").strip(),
-                desc=(node.get("content-desc") or "").strip(),
-                resource_id=node.get("resource-id", ""),
-                hint=(node.get("hint") or "").strip(),
-                bounds=bounds,
-                label=_truncate(label),
-                clickable=_bool(node, "clickable"),
-                long_clickable=_bool(node, "long-clickable"),
-                checkable=_bool(node, "checkable"),
-                checked=_bool(node, "checked"),
-                scrollable=_bool(node, "scrollable"),
-                editable=editable,
-                focused=_bool(node, "focused"),
-                enabled=node.get("enabled", "true") == "true",
-                password=_bool(node, "password"),
-                selected=_bool(node, "selected"),
-                depth=depth,
-                sr_only=not interactive and not tappable,
-                z=z,
-            )
-            if el.interactive:
-                el.risk = _risk(own_label, el.label, el.short_id)
-            elements.append(el)
-        # Scroll containers don't swallow their children's labels: rows inside a list must stay listed.
-        swallows = interactive and not scrollable
-        for position, child in enumerate(node.findall("node")):
-            order = int(child.get("drawing-order") or 0)
-            visit(child, depth + 1, inside_interactive or swallows, [*z, order, position])
-
-    for position, node in enumerate(top_nodes):
-        visit(node, 0, False, [int(node.get("drawing-order") or 0), position])
-    return Snapshot(screen=screen, rotation=rotation, package=package, elements=elements)
-
-
-def _risk(own_label: str, label: str, short_id: str) -> str | None:
+def risk(own_label: str, label: str, short_id: str) -> str | None:
     """Only action-like wording counts: "Send feedback" is an action, "Allow X to send you ...?" is not."""
     parts = [own_label] if own_label else label.split(" | ")
     actions = [p for p in parts if guard.action_like(p)]

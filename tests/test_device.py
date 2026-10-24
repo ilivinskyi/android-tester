@@ -1,6 +1,6 @@
 import pytest
 
-from adtlib.device import escape_input_text
+from mobiletester.android.device import escape_input_text
 
 
 def test_escape_spaces_and_shell_chars():

@@ -8,9 +8,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from . import annotate, hierarchy, keyboard, state
+from ..core import annotate, state
+from ..core.fingerprint import screen_fingerprint
+from . import hierarchy, keyboard
 from .adb import Adb, AdbError
-from .fingerprint import screen_fingerprint
 from .hierarchy import Bounds, Snapshot
 
 _REMOTE_DUMP = "/sdcard/adt_dump.xml"

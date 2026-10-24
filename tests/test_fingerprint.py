@@ -2,8 +2,8 @@
 
 import dataclasses
 
-from adtlib import hierarchy
-from adtlib.fingerprint import screen_fingerprint
+from mobiletester.android import hierarchy
+from mobiletester.core.fingerprint import screen_fingerprint
 
 JUMBO, JUMBO_ACT = "com.icemobile.jumboclient", "com.jumbo.fep.MainActivity"
 DISPLAY = (1080, 2400)

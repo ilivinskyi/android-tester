@@ -1,4 +1,4 @@
-from adtlib.capture import crash_summary, new_lines
+from mobiletester.android.capture import crash_summary, new_lines
 
 JAVA_CRASH = """--------- beginning of crash
 10-23 15:04:31.120  4321  4321 E AndroidRuntime: FATAL EXCEPTION: main

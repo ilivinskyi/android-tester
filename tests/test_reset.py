@@ -2,8 +2,9 @@ import json
 
 import pytest
 
-from adtlib import device, session, state
-from adtlib.adb import AdbError
+from mobiletester.android import device
+from mobiletester.android.adb import AdbError
+from mobiletester.core import session, state
 
 PKG = "com.example.notes"
 

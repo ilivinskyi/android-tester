@@ -1,4 +1,4 @@
-from adtlib import state
+from mobiletester.core import state
 
 
 def test_state_found_from_a_subfolder_of_the_project(tmp_path, monkeypatch):

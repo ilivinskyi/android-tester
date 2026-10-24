@@ -2,7 +2,7 @@
 
 import struct
 
-from adtlib import apkinfo
+from mobiletester.android import apkinfo
 
 
 def _string_pool(strings: list[str]) -> bytes:

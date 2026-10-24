@@ -11,7 +11,8 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import entry_script, state
+from ..core import state
+from . import entry_script
 from .adb import Adb, AdbError, detached_kwargs, is_alive, terminate
 
 # --- logcat ----------------------------------------------------------------------------------

@@ -11,7 +11,7 @@ import re
 import statistics
 from pathlib import Path
 
-from . import session, state
+from ..core import session, state
 from .adb import Adb, AdbError
 
 

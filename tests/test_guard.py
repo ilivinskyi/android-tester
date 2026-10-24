@@ -1,6 +1,6 @@
 import pytest
 
-from adtlib.guard import classify
+from mobiletester.core.guard import classify
 
 
 @pytest.mark.parametrize(

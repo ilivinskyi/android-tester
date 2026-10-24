@@ -1,5 +1,5 @@
-from adtlib import hierarchy
-from adtlib.hierarchy import Bounds
+from mobiletester.android import hierarchy
+from mobiletester.android.hierarchy import Bounds
 
 
 def test_bounds_parse_and_geometry():

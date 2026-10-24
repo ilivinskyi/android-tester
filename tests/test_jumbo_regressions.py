@@ -2,7 +2,8 @@
 
 import random
 
-from adtlib import guard, hierarchy
+from mobiletester.android import hierarchy
+from mobiletester.core import guard
 
 DISPLAY = (1080, 2400)
 

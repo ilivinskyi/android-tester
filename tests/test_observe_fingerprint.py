@@ -1,4 +1,4 @@
-from adtlib import device, hierarchy
+from mobiletester.android import device, hierarchy
 
 
 def test_observe_works_without_a_fingerprint(fixture_xml, monkeypatch):

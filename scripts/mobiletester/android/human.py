@@ -12,7 +12,8 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from . import applog, capture, device, keyboard, perf, screen, session, state
+from ..core import screen, session, state
+from . import applog, capture, device, keyboard, perf
 from .adb import Adb
 from .hierarchy import Bounds
 
@@ -84,6 +85,9 @@ class Driver:
             # A swipe that doesn't move is a press held for `ms`: a real finger is never down for 0 ms.
             self.adb.shell("input", "swipe", str(x), str(y), str(x), str(y), str(ms))
 
+    def _grab(self) -> bytes:
+        return self.adb.exec_out("screencap", "-p", timeout=20)
+
     def _display(self) -> tuple[int, int]:
         w, h = device.facts(self.adb)["display"]
         return w, h
@@ -101,14 +105,14 @@ class Driver:
     def _perform(self, action: str, do, verify: bool = True, **details) -> Outcome:
         """Think, act, then wait for the screen to settle and check that something changed."""
         started = time.monotonic()
-        before = screen.signature(self.adb) if self.verify and verify else None
+        before = screen.signature(self._grab()) if self.verify and verify else None
         if not self.fast:
             time.sleep(max(0.0, self._uniform(self.pace.think) - (time.monotonic() - started)))
         acted = datetime.now().astimezone()
         do()
         outcome = Outcome()
         if before is not None:
-            after, outcome.settled = screen.wait_stable(self.adb)
+            after, outcome.settled = screen.wait_stable(self._grab)
             outcome.changed = screen.differs(before, after)
         # Crash watch: a crash is caught at the step that caused it, not at wrap-up.
         if crash_lines := capture.new_crashes(self.adb):

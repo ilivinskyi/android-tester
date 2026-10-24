@@ -3,7 +3,7 @@ import subprocess
 
 import pytest
 
-from adtlib.capture import build_timeline, concat_listing, video_position
+from mobiletester.android.capture import build_timeline, concat_listing, video_position
 
 # Two chunks; the second started 2.6 s after the first one's 180 s ended (screenrecord restart gap).
 TIMELINE = {"chunks": [

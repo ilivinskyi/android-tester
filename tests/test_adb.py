@@ -1,6 +1,6 @@
 import pytest
 
-from adtlib.adb import DeviceError, DeviceInfo, parse_devices, pick_serial
+from mobiletester.android.adb import DeviceError, DeviceInfo, parse_devices, pick_serial
 
 DEVICES_OUTPUT = """List of devices attached
 0A1B2C3D4E5F6         device product:lynx model:Pixel_7a device:lynx transport_id:1

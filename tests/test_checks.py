@@ -1,6 +1,7 @@
 """Per-action app log checks, memory object counts and the leak verdict."""
 
-from adtlib import applog, perf, report_text
+from mobiletester.android import applog, perf
+from mobiletester.core import report_text
 
 PKG = "com.example.notes"
 
