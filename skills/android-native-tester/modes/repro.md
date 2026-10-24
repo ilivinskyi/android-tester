@@ -37,7 +37,7 @@ A bug reproduced only by automation is **Unconfirmed**.
 Manual-repro protocol (offer it; in auto mode `unconfirmed_repro` decides when):
 1. Reset to the start state as in [Start state](../SKILL.md#start-state) and tell the user exactly what is on screen.
 2. `adt record start --out RUN/videos/<id>-manual.mp4`.
-3. Give the user the steps and ask them to perform them by hand (AskUserQuestion with outcomes: reproduced / not reproduced / something else).
+3. Give the user the steps and ask them to perform them by hand (offer the outcomes: reproduced / not reproduced / something else).
 4. `adt record stop`; compare their run with the automated one frame by frame (`ffmpeg` frames at the step times).
    Record the outcome with `adt report confirm RUN <id> --result ... --tries N/M --by "<their name>"`.
 5. If they didn't reproduce it, list every difference between their run and the automated runs, and test each one as a variant.

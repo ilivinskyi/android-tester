@@ -1,6 +1,6 @@
 # adt command reference
 
-`adt` = `uv run --script "${CLAUDE_PLUGIN_ROOT}/scripts/adt.py"`.
+`adt` is the android-tester command line: the `adt` command when it is installed (`uv tool install`, see the README), otherwise, in the Claude Code plugin, `uv run --script "${CLAUDE_PLUGIN_ROOT}/scripts/adt.py"`.
 
 Global options (before or after the command):
 

@@ -5,14 +5,11 @@ description: Use when a task needs to look at or operate a connected Android pho
 
 # Android device
 
-All device work goes through one CLI.
-Run it with the Bash tool exactly like this (the path is substituted when this skill loads):
+All device work goes through one CLI, `adt`, run in the shell.
+- Installed as a command (`uv tool install`, any agent): `adt <command> [options]`.
+- In the Claude Code plugin without that install: `uv run --script "${CLAUDE_PLUGIN_ROOT}/scripts/adt.py" <command> [options]` (Claude Code fills in the path).
 
-```bash
-uv run --script "${CLAUDE_PLUGIN_ROOT}/scripts/adt.py" <command> [options]
-```
-
-Below, `adt` stands for that whole prefix.
+Try `adt doctor` first; if the command isn't found, use the plugin form. Below, `adt` stands for whichever works.
 Full options for every command: [reference.md](reference.md).
 **REQUIRED:** follow the `android-human-input` skill for every UI action.
 
@@ -32,7 +29,7 @@ Use this skill on its own only for one-off device tasks: a screenshot, checking 
 ## The loop: observe, look, act, check
 
 1. `adt observe` dumps the UI hierarchy and takes a screenshot, and prints the screen identity and a numbered element list.
-2. Open the `preview:` image with the Read tool. Its numbered boxes match the `[index]` in the list.
+2. Look at the `preview:` image (open it with your file or image viewing tool). Its numbered boxes match the `[index]` in the list.
 3. Act on one element: `adt tap --index N`, `adt type "text" --index N`, `adt scroll down`, `adt key back`.
    Human mode is the default: pacing, press duration, finger position and navigation style are handled for you.
 4. Read the action's output. "no visible change" means it may not have landed: observe before continuing.

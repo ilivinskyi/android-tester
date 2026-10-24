@@ -11,7 +11,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import state
+from . import entry_script, state
 from .adb import Adb, AdbError, detached_kwargs, is_alive, terminate
 
 # --- logcat ----------------------------------------------------------------------------------
@@ -105,8 +105,7 @@ def record_start(adb: Adb, out_file: Path) -> int:
     adb.shell("rm", "-rf", _REMOTE_REC_DIR, check=False)
     adb.shell("mkdir", "-p", _REMOTE_REC_DIR)
     # The worker is this same CLI in a hidden mode, detached so it survives the current command.
-    entry = Path(__file__).resolve().parent.parent / "adt.py"
-    cmd = [sys.executable, str(entry), "-s", adb.serial, "_record-worker", str(stop_flag)]
+    cmd = [sys.executable, str(entry_script()), "-s", adb.serial, "_record-worker", str(stop_flag)]
     log = (state.device_dir(adb.serial) / "record_worker.log").open("wb")
     proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, **detached_kwargs())
     state.write_json(rec_file, {

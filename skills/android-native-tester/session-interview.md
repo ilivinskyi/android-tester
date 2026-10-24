@@ -1,7 +1,7 @@
 # Session interview
 
 Asked at the start of every session, after onboarding.
-Use the AskUserQuestion tool, at most four questions per call, recommended option first.
+Ask with your question tool (AskUserQuestion in Claude Code) or as a numbered list in chat, at most four questions at a time, recommended option first.
 Skip a question when the command arguments, the config, or the app profile already answer it.
 In auto mode, ask only the questions marked **always**; the rest take the defaults shown.
 

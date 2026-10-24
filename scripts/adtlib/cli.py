@@ -24,6 +24,7 @@ from . import (
     apps,
     capture,
     device,
+    entry_script,
     hierarchy,
     keyboard,
     lifecycle,
@@ -577,7 +578,7 @@ def cmd_script(args, adb: Adb) -> int:
     script = next((c for c in candidates if c.is_file()), None)
     if script is None:
         raise NotFound(f"no {kind[:-1]} '{args.name}' in {app_dir / kind}")
-    adt_entry = Path(__file__).resolve().parent.parent / "adt.py"
+    adt_entry = entry_script()
     env = {
         **os.environ, "ANDROID_SERIAL": adb.serial, "ADB": str(adb.path), "ADT_PACKAGE": args.package,
         "ADT_APP_DIR": str(app_dir), "ADT_RUN_DIR": str(session.run_dir(adb.serial) or ""),

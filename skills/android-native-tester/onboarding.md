@@ -1,7 +1,7 @@
 # Onboarding
 
 Runs once per project, on the first `/android-native-tester` when `.android-tester/config.yaml` is missing, or when the user asks to redo it.
-Ask with the AskUserQuestion tool, at most four questions per call, recommended option first.
+Ask with your question tool (AskUserQuestion in Claude Code) or as a numbered list in chat, at most four questions at a time, recommended option first.
 Write the answers into the files below as you go, so an interrupted onboarding keeps what it has.
 
 ## 1. Tester and team defaults

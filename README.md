@@ -77,7 +77,7 @@ flowchart TD
 
 ## Requirements
 
-- [Claude Code](https://code.claude.com) (CLI, desktop app or IDE extension).
+- An agent that supports [Agent Skills](https://agentskills.io): [Claude Code](https://code.claude.com) (as a plugin), or Codex, OpenCode, pi and others (see "Install in other agents").
 - Android SDK Platform-Tools (`adb`).
 - [uv](https://docs.astral.sh/uv/), which runs the bundled Python tool with its dependencies; no manual Python setup.
 - `ffmpeg` and `ffprobe` for joining recordings and cutting bug clips.
@@ -139,7 +139,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 Some brands need their own USB driver on Windows (for example Samsung's; Pixel phones use the Google USB Driver from Android Studio's SDK Manager).
 An emulator from Android Studio works too and is the better choice for tests that change system settings (font size, dark mode, rotation).
 
-## Install the plugin
+## Install in Claude Code
 
 Inside Claude Code:
 
@@ -176,6 +176,62 @@ git clone https://github.com/ilivinskyi/android-tester.git
 ```bash
 claude --plugin-dir ./android-tester
 ```
+
+## Install in other agents
+
+The skills follow the open [Agent Skills](https://agentskills.io) format, so any agent that reads `SKILL.md` folders can use them: Codex, OpenCode, pi, and Claude Code without the plugin.
+Two parts: the `adt` command the skills call, and the three skill folders.
+
+1. Install `adt` as a command (needs [uv](https://docs.astral.sh/uv/)):
+
+   ```bash
+   uv tool install git+https://github.com/ilivinskyi/android-tester
+   ```
+
+   Check it with `adt doctor`.
+
+2. Get the skills:
+
+   ```bash
+   git clone https://github.com/ilivinskyi/android-tester.git ~/android-tester
+   ```
+
+3. Copy the folders in `skills/` into a skills folder your agent reads.
+   For all your projects (global), `~/.agents/skills/` is read by Codex, OpenCode and pi:
+
+   ```bash
+   mkdir -p ~/.agents/skills && cp -R ~/android-tester/skills/. ~/.agents/skills/
+   ```
+
+   On Windows (PowerShell):
+
+   ```powershell
+   New-Item -ItemType Directory -Force "$HOME\.agents\skills"; Copy-Item -Recurse -Force "$HOME\android-tester\skills\*" "$HOME\.agents\skills\"
+   ```
+
+4. Start a new agent session and ask it to test an app, for example "explore the Notes app on my phone for 15 minutes".
+
+| Agent | Global (all projects) | One project only |
+|---|---|---|
+| Codex | `~/.agents/skills/` | `.agents/skills/` |
+| OpenCode | `~/.agents/skills/` or `~/.config/opencode/skills/` | `.agents/skills/` or `.opencode/skills/` |
+| pi | `~/.agents/skills/` or `~/.pi/agent/skills/` | `.agents/skills/` (after you trust the project) or `.pi/skills/` |
+| Claude Code (without the plugin) | `~/.claude/skills/` | `.claude/skills/` |
+| Other Agent Skills agents | their skills folder | their project skills folder |
+
+These folders change between agent versions; check your agent's skills documentation if the skills don't show up.
+
+To update later:
+
+```bash
+uv tool upgrade android-tester
+```
+```bash
+git -C ~/android-tester pull
+```
+
+Then copy the skill folders again (or link them instead of copying, so `git pull` is enough).
+The Claude Code plugin runs `adt` from its own copy and needs neither step.
 
 ## Run your first session
 
@@ -289,7 +345,14 @@ The CLI also refuses to tap elements labelled like payment, messaging or account
 
 ## The `adt` command-line tool
 
-The skills drive everything through `adt`, a small Python tool in `scripts/`, run by uv:
+The skills drive everything through `adt`, a small Python tool in `scripts/`.
+Installed as a command (see "Install in other agents"):
+
+```bash
+adt doctor
+```
+
+The Claude Code plugin, and a clone of this repo, run it through uv without installing:
 
 ```bash
 uv run --script scripts/adt.py doctor
