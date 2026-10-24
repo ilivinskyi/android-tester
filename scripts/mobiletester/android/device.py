@@ -391,6 +391,7 @@ def app_info(adb: Adb, package: str) -> dict:
 
 def device_props(adb: Adb) -> dict:
     props = {
+        "platform": "Android",
         "serial": adb.serial,
         "model": adb.getprop("ro.product.model"),
         "manufacturer": adb.getprop("ro.product.manufacturer"),

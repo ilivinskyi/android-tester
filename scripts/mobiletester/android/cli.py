@@ -486,7 +486,8 @@ def cmd_session(args, adb: Adb) -> int:
             props = device.device_props(adb)
             meta = {
                 "mode": args.mode, "charter": args.charter, "ticket": args.ticket, "package": args.package,
-                "device": props, "input": "adt human mode" + (f" (pace {args.pace})" if args.pace != "human" else ""),
+                "platform": "Android", "device": props,
+                "input": "adt human mode" + (f" (pace {args.pace})" if args.pace != "human" else ""),
             }
             if args.package:
                 try:
@@ -495,7 +496,8 @@ def cmd_session(args, adb: Adb) -> int:
                     meta["app"] = {"package": args.package, "installed": False}
             # Folder, title and tester come from the project config, whichever skill (or person) started it.
             directory = Path(args.dir) if args.dir else project.default_run_dir(args.package, args.mode, args.ticket)
-            defaults = {"title": project.default_title(args.package, args.mode), "tester": project.tester()}
+            defaults = {"title": project.default_title(args.package, args.mode, platform="Android"),
+                        "tester": project.tester()}
             directory = session.start(adb.serial, directory, meta, defaults)
             started = []
             if args.logcat:
@@ -556,7 +558,7 @@ def cmd_touches(args, adb: Adb) -> int:
 
 
 def cmd_script(args, adb: Adb) -> int:
-    """Run an app-profile script: .android-tester/apps/<package>/<hooks|checks>/<name>.(py|sh|ps1)."""
+    """Run an app-profile script: .mobile-tester/apps/<package>/<hooks|checks>/<name>.(py|sh|ps1)."""
     kind = "hooks" if args.cmd == "hook" else "checks"
     app_dir = Path(args.config_dir).resolve() / "apps" / args.package
     candidates = [app_dir / kind / f"{args.name}{ext}" for ext in (".py", ".sh", ".ps1")]
@@ -871,10 +873,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--approval", metavar="APPROVAL", help="user's approval, required to turn it on on a phone")
 
     for name, kind in (("hook", "hooks"), ("check", "checks")):
-        p = sub.add_parser(name, help=f"run an app-profile script from .android-tester/apps/<package>/{kind}/")
+        p = sub.add_parser(name, help=f"run an app-profile script from .mobile-tester/apps/<package>/{kind}/")
         p.add_argument("name")
         p.add_argument("--package", required=True)
-        p.add_argument("--config-dir", default=".android-tester")
+        p.add_argument("--config-dir", default=".mobile-tester")
         p.add_argument("script_args", nargs="*", help="arguments for the script, after --")
 
     p = sub.add_parser("perf", help="cold start time, frame stats and memory (saved into the active session)")
@@ -915,12 +917,12 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("--device", help="default: the session's device")
     rp.add_argument("--build", help="default: the session's build")
 
-    p = sub.add_parser("issues", help="the app's known-issues registry (.android-tester/apps/<package>/)")
+    p = sub.add_parser("issues", help="the app's known-issues registry (.mobile-tester/apps/<package>/)")
     iss = _subparsers(p, common, dest="issues_cmd", required=True)
     for name in ("list", "sync", "set"):
         ip = iss.add_parser(name)
         ip.add_argument("--package", required=True)
-        ip.add_argument("--config-dir", default=".android-tester")
+        ip.add_argument("--config-dir", default=".mobile-tester")
         if name == "list":
             ip.add_argument("--status", default="open", choices=["all", *lifecycle.ISSUE_STATUSES])
             ip.add_argument("--json", action="store_true")

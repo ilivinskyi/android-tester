@@ -50,7 +50,7 @@ def _run(tmp_path, findings, name="2026-10-23-notes-explore"):
 
 
 def test_registry_adds_new_issues_with_test_case_drafts(tmp_path):
-    config = tmp_path / ".android-tester"
+    config = tmp_path / ".mobile-tester"
     run = _run(tmp_path, [
         _finding(),
         _finding(id="O1", type="observation", title="Odd tone"),
@@ -69,7 +69,7 @@ def test_registry_adds_new_issues_with_test_case_drafts(tmp_path):
 
 
 def test_known_issue_seen_again_is_not_added_twice_and_reopens_fixed(tmp_path):
-    config = tmp_path / ".android-tester"
+    config = tmp_path / ".mobile-tester"
     lifecycle.sync_registry(_run(tmp_path, [_finding()]), config, "com.example.notes")
     lifecycle.set_issue(config, "com.example.notes", "K-1", "fixed", note="retest passed", build="1.1 (11)")
     second = _run(tmp_path, [_finding(id="B1", known_issue="K-1")], name="2026-10-30-notes-explore")
@@ -83,7 +83,7 @@ def test_known_issue_seen_again_is_not_added_twice_and_reopens_fixed(tmp_path):
 
 
 def test_set_issue_validates(tmp_path):
-    config = tmp_path / ".android-tester"
+    config = tmp_path / ".mobile-tester"
     with pytest.raises(LookupError):
         lifecycle.set_issue(config, "com.example.notes", "K-9", "fixed")
     lifecycle.sync_registry(_run(tmp_path, [_finding()]), config, "com.example.notes")

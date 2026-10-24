@@ -6,10 +6,10 @@ DAY = date(2026, 10, 23)
 
 
 def _project(tmp_path, config: str, profile: str | None = None):
-    (tmp_path / ".android-tester").mkdir()
-    (tmp_path / ".android-tester" / "config.yaml").write_text(config, encoding="utf-8")
+    (tmp_path / ".mobile-tester").mkdir()
+    (tmp_path / ".mobile-tester" / "config.yaml").write_text(config, encoding="utf-8")
     if profile is not None:
-        app = tmp_path / ".android-tester" / "apps" / "com.example.notes"
+        app = tmp_path / ".mobile-tester" / "apps" / "com.example.notes"
         app.mkdir(parents=True)
         (app / "profile.yaml").write_text(profile, encoding="utf-8")
     nested = tmp_path / "work" / "deeper"
@@ -47,7 +47,7 @@ def test_template_placeholder_name_is_not_used_as_the_app_name(tmp_path):
 
 
 def test_session_defaults_fill_only_missing_fields(tmp_path, monkeypatch):
-    monkeypatch.setenv("ADT_HOME", str(tmp_path / ".adt"))
+    monkeypatch.setenv("MT_HOME", str(tmp_path / ".adt"))
     run = tmp_path / "run"
     session.start("s1", run, {"mode": "explore"}, {"tester": "Ihor", "title": "Notes Android - exploratory test"})
     (run / "session.json").write_text('{"tester": "Someone else", "mode": "explore"}', encoding="utf-8")

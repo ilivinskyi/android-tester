@@ -77,8 +77,46 @@ def summary(f: dict) -> str:
     return text if len(text) <= 200 else text[:199].rstrip() + "…"
 
 
+def platform(session: dict) -> str:
+    """'Android' or 'iOS'; run folders from before iOS support have no platform and are Android."""
+    return session.get("platform") or (session.get("device") or {}).get("platform") or "Android"
+
+
+def device_facts(dev: dict) -> dict[str, str]:
+    """The device in display-ready words, whichever platform wrote it.
+
+    Each platform writes `os`, `kind`, `screen`, `navigation` and `keyboard` as display text; Android run folders
+    from before that only have the raw facts (android, sdk, emulator, density, nav mode, IME id).
+    """
+    if not dev:
+        return {}
+    os_ = dev.get("os") or (f"Android {dev['android']}" + (f" (API {dev['sdk']})" if dev.get("sdk") else "")
+                            if dev.get("android") else "")
+    screen = dev.get("screen", "")
+    if screen and dev.get("density"):
+        screen += f" at {dev['density']} dpi"
+    navigation = dev.get("navigation", "")
+    if navigation in ("gesture", "3-button", "2-button"):
+        navigation += " navigation"
+    return {
+        "model": " ".join(p for p in (dev.get("manufacturer", ""), dev.get("model", "")) if p),
+        "short_model": dev.get("model", ""),
+        "os": os_,
+        "screen": screen,
+        "kind": dev.get("kind") or ("emulator" if dev.get("emulator") else "physical"),
+        "navigation": navigation,
+        "keyboard": keyboard_name(dev["keyboard"]) if dev.get("keyboard") else "",
+        "locale": dev.get("locale", ""),
+    }
+
+
+def _joined(*parts: str, sep: str = ", ") -> str:
+    return sep.join(p for p in parts if p)
+
+
 def environment(session: dict) -> list[tuple[str, str]]:
     dev, app = session.get("device") or {}, session.get("app") or {}
+    facts = device_facts(dev)
     ticket = session.get("ticket")
     if isinstance(ticket, dict):
         ticket = " - ".join(str(ticket.get(k)) for k in ("key", "summary") if ticket.get(k))
@@ -91,12 +129,9 @@ def environment(session: dict) -> list[tuple[str, str]]:
         ("App", " ".join(str(app.get(k, "")) for k in ("package", "versionName")).strip()
          + (f" ({app['versionCode']})" if app.get("versionCode") else "")),
         ("Install source", app.get("install_source")),
-        ("Device", f"{dev.get('manufacturer', '')} {dev.get('model', '')}, Android {dev.get('android', '')} "
-                   f"(API {dev.get('sdk', '')}), {dev.get('screen', '')} at {dev.get('density', '')} dpi"
-         if dev else None),
-        ("Device kind", ("emulator" if dev.get("emulator") else "physical") if dev else None),
-        ("Navigation and keyboard",
-         f"{dev.get('navigation', '')} navigation, {keyboard_name(dev.get('keyboard', ''))}" if dev else None),
+        ("Device", _joined(facts["model"], facts["os"], facts["screen"]) if dev else None),
+        ("Device kind", facts.get("kind")),
+        ("Navigation and keyboard", _joined(facts["navigation"], facts["keyboard"]) if dev else None),
         ("Locale", dev.get("locale")),
         ("Input", session.get("input")),
         ("Setup steps run fast", ", ".join(session.get("setup_steps_fast", [])) or None),
@@ -105,11 +140,13 @@ def environment(session: dict) -> list[tuple[str, str]]:
 
 
 def environment_line(session: dict) -> str:
-    dev, app = session.get("device") or {}, session.get("app") or {}
-    return (f"{dev.get('model', '?')}, Android {dev.get('android', '?')} (API {dev.get('sdk', '?')}), "
-            f"{'emulator' if dev.get('emulator') else 'physical device'}, {dev.get('navigation', '?')} navigation, "
-            f"keyboard {keyboard_name(dev.get('keyboard', ''))}, locale {dev.get('locale', '?')}; "
-            f"app {app.get('package', '?')} {app.get('versionName', '')} ({app.get('versionCode', '')}); "
+    facts = device_facts(session.get("device") or {}) or {"kind": "?"}
+    app = session.get("app") or {}
+    kind = "physical device" if facts["kind"] == "physical" else facts["kind"]
+    device = _joined(facts.get("short_model") or "?", facts.get("os") or "?", kind, facts.get("navigation", ""),
+                     f"keyboard {facts['keyboard']}" if facts.get("keyboard") else "",
+                     f"locale {facts['locale']}" if facts.get("locale") else "")
+    return (f"{device}; app {app.get('package', '?')} {app.get('versionName', '')} ({app.get('versionCode', '')}); "
             f"input: {session.get('input', 'adb')}")
 
 
@@ -269,7 +306,8 @@ def render_jira_csv(session: dict, findings: list[dict]) -> str:
     for f in findings:
         if not fileable(f):
             continue
-        labels = ["android-tester", f"severity-{(f.get('severity') or 'none').lower()}", f"type-{f['type']}"]
+        labels = [f"{platform(session).lower()}-tester", f"severity-{(f.get('severity') or 'none').lower()}",
+                  f"type-{f['type']}"]
         if outside(f):
             labels[2] += "-outside-scope"
         writer.writerow([f"[{f['id']}] {f['title']}", render_jira_wiki(session, f), "Bug",

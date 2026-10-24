@@ -81,7 +81,7 @@ def test_unknown_level_is_rejected():
 
 
 def test_reset_is_listed_once_in_the_sessions_fast_steps(tmp_path, monkeypatch):
-    monkeypatch.setenv("ADT_HOME", str(tmp_path / ".adt"))
+    monkeypatch.setenv("MT_HOME", str(tmp_path / ".adt"))
     run = tmp_path / "run"
     session.start("fake-serial", run, {"mode": "repro"})
     for _ in range(2):

@@ -5,7 +5,7 @@ __pycache__/
 .ruff_cache/
 
 # Device state and evidence produced by the skills
-.adt/
+.mobile-tester/state/
 reports/
 
 # Per-app test credentials

@@ -59,7 +59,7 @@ class _Adb:
 
 
 def test_each_check_reads_only_new_complete_lines(tmp_path, monkeypatch):
-    monkeypatch.setenv("ADT_HOME", str(tmp_path / ".adt"))
+    monkeypatch.setenv("MT_HOME", str(tmp_path / ".adt"))
     log = tmp_path / "run" / "logs" / "logcat.txt"
     log.parent.mkdir(parents=True)
     lines = LOG.splitlines(keepends=True)

@@ -1,6 +1,6 @@
-"""The project's android-tester configuration, as far as adt itself needs it.
+"""The project's mobile-tester configuration, as far as adt and idt need it.
 
-The skills own the config (.android-tester/config.yaml, written by onboarding). adt reads the few values
+The skills own the config (.mobile-tester/config.yaml, written by onboarding). The tools read the few values
 that must not depend on which skill drove the session: where reports go and who the tester is.
 """
 
@@ -12,13 +12,15 @@ from pathlib import Path
 
 import yaml
 
-CONFIG = Path(".android-tester") / "config.yaml"
+from .state import PROJECT_DIR
+
+CONFIG = Path(PROJECT_DIR) / "config.yaml"
 MODE_TITLES = {"explore": "exploratory test", "test-case": "test cases", "repro": "bug reproduction",
                "ui-review": "UI review", "retest": "retest", "memory": "memory check"}
 
 
 def find_config(start: Path | None = None) -> Path | None:
-    """Like git: the nearest .android-tester/config.yaml in this folder or above it."""
+    """Like git: the nearest .mobile-tester/config.yaml in this folder or above it."""
     start = (start or Path.cwd()).resolve()
     for folder in (start, *start.parents):
         if (folder / CONFIG).is_file():
@@ -41,7 +43,7 @@ def tester(start: Path | None = None) -> str | None:
 
 def app_name(root: Path, package: str) -> str:
     """The profile's app name, or the last part of the package id."""
-    profile = root / ".android-tester" / "apps" / package / "profile.yaml"
+    profile = root / PROJECT_DIR / "apps" / package / "profile.yaml"
     if profile.is_file():
         name = str((yaml.safe_load(profile.read_text(encoding="utf-8")) or {}).get("name") or "")
         if name and not name.startswith("<"):  # "<App name>" is the template's placeholder
@@ -70,8 +72,9 @@ def default_run_dir(package: str | None, mode: str | None, ticket: str | None = 
     return candidate
 
 
-def default_title(package: str | None, mode: str | None, start: Path | None = None) -> str:
-    """'<App name> Android - <mode>', the standard report title."""
+def default_title(package: str | None, mode: str | None, start: Path | None = None,
+                  platform: str = "Android") -> str:
+    """'<App name> <platform> - <mode>', the standard report title."""
     _, root = load(start)
     name = app_name(root, package) if package else "App"
-    return f"{name} Android - {MODE_TITLES.get(mode or 'explore', mode)}"
+    return f"{name} {platform} - {MODE_TITLES.get(mode or 'explore', mode)}"
