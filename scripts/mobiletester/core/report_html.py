@@ -311,11 +311,11 @@ _INDEX_JS = r"""
   const $ = (s, el = document) => el.querySelector(s);
   const $$ = (s, el = document) => [...el.querySelectorAll(s)];
   const base = location.pathname.replace(/[^/]*$/, '');
-  const store = (k, v) => { try { sessionStorage.setItem(`adt:${base}:${k}`, v); } catch (e) { /* storage off */ } };
+  const store = (k, v) => { try { sessionStorage.setItem(`mt:${base}:${k}`, v); } catch (e) { /* storage off */ } };
   const take = k => {
     try {
-      const v = sessionStorage.getItem(`adt:${base}:${k}`);
-      sessionStorage.removeItem(`adt:${base}:${k}`);
+      const v = sessionStorage.getItem(`mt:${base}:${k}`);
+      sessionStorage.removeItem(`mt:${base}:${k}`);
       return v;
     } catch (e) { return null; }
   };
@@ -394,8 +394,8 @@ _BUG_JS = r"""
   const $$ = (s, el = document) => [...el.querySelectorAll(s)];
   const id = document.body.dataset.id;
   const base = location.pathname.replace(/bugs\/[^/]*$/, '');
-  const read = k => { try { return sessionStorage.getItem(`adt:${base}:${k}`); } catch (e) { return null; } };
-  const store = (k, v) => { try { sessionStorage.setItem(`adt:${base}:${k}`, v); } catch (e) { /* storage off */ } };
+  const read = k => { try { return sessionStorage.getItem(`mt:${base}:${k}`); } catch (e) { return null; } };
+  const store = (k, v) => { try { sessionStorage.setItem(`mt:${base}:${k}`, v); } catch (e) { /* storage off */ } };
 
   // Previous/Next follow the list as it was filtered on the index page.
   const back = $('#back'), prev = $('#prev'), next = $('#next'), pos = $('#pos');

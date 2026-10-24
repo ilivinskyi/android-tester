@@ -19,7 +19,7 @@ from . import hierarchy, simctl
 from .hierarchy import Key, Keyboard
 from .runner import APP_STATES, FOREGROUND, SPRINGBOARD, Runner
 
-NAVIGATION = "edge swipe or the app's back button"
+NAVIGATION = "back by left-edge swipe or the app's back button"
 
 
 @dataclass

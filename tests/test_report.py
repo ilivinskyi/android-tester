@@ -250,7 +250,7 @@ def test_app_log_section_lists_grouped_issues(run, tmp_path):
 IOS_SESSION = {
     **SESSION, "title": "Habits iOS - exploratory test", "platform": "iOS", "input": "idt human mode",
     "device": {"platform": "iOS", "model": "iPhone 17", "os": "iOS 27.0", "kind": "simulator",
-               "screen": "402x874 pt @3x", "navigation": "edge swipe or the app's back button",
+               "screen": "402x874 pt @3x", "navigation": "back by left-edge swipe or the app's back button",
                "keyboard": "iOS keyboard (en_US)", "locale": "en_US"},
     "app": {"package": "com.github.aint.Habits", "versionName": "1.0", "versionCode": "1"},
 }
@@ -260,7 +260,7 @@ def test_environment_of_an_ios_session_has_no_android_words():
     rows = dict(report_text.environment(IOS_SESSION))
     assert rows["Device"] == "iPhone 17, iOS 27.0, 402x874 pt @3x"
     assert rows["Device kind"] == "simulator"
-    assert rows["Navigation and keyboard"] == "edge swipe or the app's back button, iOS keyboard (en_US)"
+    assert rows["Navigation and keyboard"] == "back by left-edge swipe or the app's back button, iOS keyboard (en_US)"
     line = report_text.environment_line(IOS_SESSION)
     assert "Android" not in line and "API" not in line
     assert line.startswith("iPhone 17, iOS 27.0, simulator")
